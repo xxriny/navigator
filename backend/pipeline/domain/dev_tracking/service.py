@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .evidence import build_security_gate
+
 # author:xxrin
 # navi_v3 Dev Tracking 실행 어댑터. 실제 노드 실행은 LangGraph graph builder가 담당한다.
 
@@ -38,7 +40,7 @@ def run_dev_tracking_analysis(
         return {"status": "error", "timeline": timeline, "data": state}
 
     final_status = "pending_pm_approval"
-    if state.get("approval_status") == "NO_GAP_DETECTED":
+    if state.get("approval_status") == "NO_GAP_DETECTED" and build_security_gate(state)["success_eligible"]:
         final_status = "complete"
     return {
         "status": final_status,

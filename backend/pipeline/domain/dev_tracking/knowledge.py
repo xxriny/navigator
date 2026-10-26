@@ -5,6 +5,8 @@ from typing import Any
 
 from sqlalchemy import or_
 
+from .security import build_safe_knowledge_reference, is_verified_dev_knowledge_artifact
+
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
     # API 응답과 프롬프트 컨텍스트가 같은 구조를 쓰도록 DB row를 평탄화한다.
@@ -30,22 +32,26 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def format_dev_knowledge_context(artifacts: list[dict[str, Any]], max_chars: int = 6000) -> str:
-    # LLM 프롬프트에 붙일 수 있도록 최신 Dev Tracking 지식을 짧은 섹션 목록으로 만든다.
-    sections = []
-    for item in artifacts:
-        header = (
-            f"[{item.get('artifact_type', '')}] "
-            f"{item.get('owner', '')}/{item.get('repo', '')} "
-            f"PR #{item.get('pr_number', '')} "
-            f"({item.get('decision_status', '') or 'NO_DECISION'})"
-        ).strip()
-        body = str(item.get("searchable_text") or "").strip()
-        sections.append(f"{header}\n{body}".strip())
-
-    context = "\n\n---\n\n".join(section for section in sections if section)
+def format_dev_knowledge_context(
+    artifacts: list[dict[str, Any]],
+    max_chars: int = 6000,
+    *,
+    expected_team_id: str = "",
+    expected_repository_owner: str = "",
+    expected_repository_name: str = "",
+) -> str:
+    context = json.dumps(
+        build_safe_knowledge_reference(
+            artifacts,
+            expected_team_id=expected_team_id,
+            expected_repository_owner=expected_repository_owner,
+            expected_repository_name=expected_repository_name,
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     if len(context) > max_chars:
-        return context[: max(0, max_chars - 20)].rstrip() + "\n... [truncated]"
+        return context[: max(0, max_chars - 20)].rstrip() + "... [truncated]"
     return context
 
 
@@ -92,14 +98,26 @@ def query_dev_knowledge_artifacts(
             or_(*like_clauses)
         )
 
-    rows = (
-        q.order_by(DevKnowledgeArtifact.created_at.desc())
-        .limit(safe_limit)
-        .all()
-    )
-    artifacts = [_row_to_dict(row) for row in rows]
+    rows = q.order_by(DevKnowledgeArtifact.created_at.desc()).limit(safe_limit * 5).all()
+    unfiltered_artifacts = [_row_to_dict(row) for row in rows]
+    artifacts = [
+        artifact
+        for artifact in unfiltered_artifacts
+        if is_verified_dev_knowledge_artifact(
+            artifact,
+            expected_team_id=team_id,
+            expected_repository_owner=owner,
+            expected_repository_name=repo,
+        )
+    ][:safe_limit]
     return {
         "artifacts": artifacts,
         "count": len(artifacts),
-        "context_text": format_dev_knowledge_context(artifacts),
+        "ignored_unverified_count": len(unfiltered_artifacts) - len(artifacts),
+        "context_text": format_dev_knowledge_context(
+            artifacts,
+            expected_team_id=team_id,
+            expected_repository_owner=owner,
+            expected_repository_name=repo,
+        ),
     }

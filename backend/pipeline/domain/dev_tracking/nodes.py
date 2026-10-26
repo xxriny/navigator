@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from .analysis_rules import (
+    _contract_name,
     _preliminary_uncertain_intent_classification,
     _rule_based_gap_report,
     _rule_based_implementation_profile,
-    _rule_based_intent_classification,
 )
 from .context_compaction import (
     _prioritize_inventory_for_pr,
@@ -42,6 +42,7 @@ from .persistence import (
     spec_loader,
 )
 from .repo_ops import _changed_files_from_git, _run_gh, _run_git
+from .evidence import build_implementation_evidence, build_security_gate, evidence_gap_report, implementation_evidence_from_state
 from .schemas import (
     DevGapIntentItem,
     DevGapIntentResponse,
@@ -125,6 +126,13 @@ def _validate_llm_gap_report(gaps: list[dict[str, Any]], state: dict[str, Any]) 
     # author:xxrin
     # LLM GAP 결과가 비어 있거나 중복된 식별자를 내면 PM 판단이 흔들리므로 semantic validation을 수행한다.
     seen: set[str] = set()
+    snapshot = _as_dict(state.get("published_spec_snapshot"))
+    known_targets = {
+        _contract_name(contract)
+        for field in ("api_contracts", "component_contracts")
+        for contract in (snapshot.get(field) if isinstance(snapshot.get(field), list) else [])
+        if isinstance(contract, dict)
+    }
     for index, gap in enumerate(gaps):
         if not isinstance(gap, dict):
             raise ValueError(f"LLM gap item {index} is not an object")
@@ -136,11 +144,17 @@ def _validate_llm_gap_report(gaps: list[dict[str, Any]], state: dict[str, Any]) 
             raise ValueError(f"LLM gap item {index} is missing required non-empty fields")
         if gap_id in seen:
             raise ValueError(f"LLM gap report returned duplicate gap_id: {gap_id}")
+        if str(gap.get("spec_target") or "").strip().lower() not in known_targets:
+            raise ValueError(f"LLM gap report references unknown spec_target: {gap.get('spec_target')}")
         seen.add(gap_id)
 
-    if not gaps and _rule_based_gap_report(state, preliminary=True):
-        raise ValueError("LLM gap report returned no gaps while rule-based comparison found gaps")
-    return gaps
+    evidence = implementation_evidence_from_state(state)
+    expected_gaps = evidence_gap_report(state) if evidence.get("complete") else _rule_based_gap_report(state, preliminary=True)
+    observed = {(str(gap.get("type") or ""), str(gap.get("spec_target") or "").lower()) for gap in gaps}
+    expected = {(str(gap.get("type") or ""), str(gap.get("spec_target") or "").lower()) for gap in expected_gaps}
+    if observed != expected:
+        raise ValueError("LLM gap report does not match rule-based evidence")
+    return expected_gaps if evidence.get("complete") else gaps
 
 
 def dev_task_planner(state: dict[str, Any]) -> dict[str, Any]:
@@ -261,19 +275,27 @@ def branch_fetcher(state: dict[str, Any]) -> dict[str, Any]:
         checkout["source_dir"] = str(repo_path)
         checkout["reset_skipped_reason"] = "provided_source_dir"
         # HEAD SHA 검증만 수행 (checkout/reset 없음)
-        if (repo_path / ".git").is_dir():
+        if (repo_path / ".git").exists():
             code, out, _ = _run_git(["rev-parse", "HEAD"], str(repo_path))
             actual_sha = out.strip() if code == 0 else ""
             checkout["actual_sha"] = actual_sha
             checkout["head_sha_matched"] = bool(
                 not expected_sha or actual_sha.lower().startswith(expected_sha.lower())
             )
+            if expected_sha and not checkout["head_sha_matched"]:
+                return {
+                    "status": "FAIL",
+                    "error_type": "HEAD_SHA_MISMATCH",
+                    "checkout": checkout,
+                    "dev_tracking_next_action": "blocked",
+                    "current_step": "branch_fetcher_failed",
+                }
             changed_files = pr_context.get("changed_files") if isinstance(pr_context.get("changed_files"), list) else []
             if not changed_files:
                 changed_files = _changed_files_from_git(repo_path, str(pr_context.get("base_branch") or ""))
             checkout["changed_files"] = changed_files
         else:
-            checkout["head_sha_matched"] = True
+            checkout["head_sha_matched"] = False
             checkout["warning"] = "source_dir is not a git repository; verification skipped"
             checkout["changed_files"] = pr_context.get("changed_files") if isinstance(pr_context.get("changed_files"), list) else []
 
@@ -425,6 +447,22 @@ def reverse_analyzer(state: dict[str, Any]) -> dict[str, Any]:
     warnings = [] if project_context else ["REVERSE_CONTEXT_EMPTY"]
     if fallback_warning:
         warnings.append(fallback_warning)
+    implementation_evidence = build_implementation_evidence(
+        source_dir,
+        _as_dict(state.get("pr_context")),
+        _as_dict(state.get("checkout")),
+        fallback_used=bool(fallback_warning),
+    )
+    if implementation_evidence["complete"]:
+        code_inventory["files"] = [{"file": item["file"]} for item in implementation_evidence["files"]]
+        code_inventory["symbols_by_file"] = {
+            item["file"]: item["symbols"] for item in implementation_evidence["files"]
+        }
+        code_inventory["summary"] = {
+            "file_count": len(implementation_evidence["files"]),
+            "symbol_count": implementation_evidence["symbol_count"],
+        }
+    code_inventory["implementation_evidence"] = implementation_evidence
     result = {
         "status": status,
         "project_context": project_context,
@@ -547,12 +585,24 @@ def _llm_gap_report(state: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[s
 def gap_analyzer(state: dict[str, Any]) -> dict[str, Any]:
     # author:xxrin
     # LLM structured output이 primary이고, rule-based 비교는 PM 검토용 preliminary fallback이다.
+    snapshot = _as_dict(state.get("published_spec_snapshot"))
+    contract_groups = [snapshot.get(field) or [] for field in ("api_contracts", "component_contracts")]
+    contracts = [contract for group in contract_groups if isinstance(group, list) for contract in group]
+    if (not contracts or any(not isinstance(group, list) for group in contract_groups)
+            or any(not isinstance(contract, dict) or not _contract_name(contract) for contract in contracts)):
+        return {
+            "status": "FAIL",
+            "error_type": "SPEC_SNAPSHOT_UNVERIFIED",
+            "errors": ["Published specification has no verifiable contracts."],
+            "dev_tracking_next_action": "blocked",
+            "current_step": "gap_analyzer_failed",
+        }
     llm_warnings = state.get("llm_warnings") or []
     if _dev_tracking_llm_enabled(state, "use_llm_gap_analyzer"):
         try:
             gaps, analyzer_meta = _llm_gap_report(state)
         except Exception as exc:
-            gaps = _rule_based_gap_report(state, preliminary=True)
+            gaps = evidence_gap_report(state) if implementation_evidence_from_state(state).get("complete") else _rule_based_gap_report(state, preliminary=True)
             analyzer_meta = _llm_meta(
                 "rule_based_fallback",
                 attempted=True,
@@ -567,7 +617,7 @@ def gap_analyzer(state: dict[str, Any]) -> dict[str, Any]:
                 error=exc,
             )
     else:
-        gaps = _rule_based_gap_report(state, preliminary=True)
+        gaps = evidence_gap_report(state) if implementation_evidence_from_state(state).get("complete") else _rule_based_gap_report(state, preliminary=True)
         analyzer_meta = _llm_meta(
             "rule_based",
             attempted=False,
@@ -693,8 +743,10 @@ def pm_report_generator(state: dict[str, Any]) -> dict[str, Any]:
             if item.get("recommended_action")
         }
     )
+    security_gate = build_security_gate(state)
+    verified_no_gap = security_gate["success_eligible"]
     if not recommended:
-        recommended = ["PM_REVIEW"] if gaps or llm_warnings else ["APPROVE_AS_INTENTIONAL"]
+        recommended = ["APPROVE_AS_INTENTIONAL"] if verified_no_gap else ["PM_REVIEW"]
     if llm_warnings and "PM_REVIEW" not in recommended:
         recommended.append("PM_REVIEW")
         recommended = sorted(recommended)
@@ -727,12 +779,14 @@ def pm_report_generator(state: dict[str, Any]) -> dict[str, Any]:
         "spec_outdated_warning": spec_warning,
         "llm_warnings": llm_warnings,
         "recommended_pm_actions": recommended,
+        "security_gate": security_gate,
     }
-    approval_status = "PENDING_PM_APPROVAL" if gaps or llm_warnings else "NO_GAP_DETECTED"
+    approval_status = "NO_GAP_DETECTED" if verified_no_gap else "PENDING_PM_APPROVAL"
     return {
         "status": "PASS",
         "pm_report": pm_report,
         "approval_status": approval_status,
+        "security_gate": security_gate,
         "dev_tracking_next_action": "pr_comment_notifier",
         "current_step": "pm_report_generator_done",
     }
@@ -796,9 +850,6 @@ def develop_loop_controller(state: dict[str, Any]) -> dict[str, Any]:
     if state.get("approval_status") == "PENDING_PM_APPROVAL":
         decision = "BLOCKED"
         next_action = "pm_approval_pending"
-    elif state.get("pending_pr_queue"):
-        decision = "NEXT_PR"
-        next_action = "branch_fetcher"
     else:
         decision = "COMPLETE"
         next_action = "complete"
