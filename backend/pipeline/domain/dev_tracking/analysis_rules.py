@@ -118,58 +118,6 @@ def _rule_based_gap_report(state: dict[str, Any], *, preliminary: bool = False) 
     return gaps
 
 
-def _rule_based_intent_classification(state: dict[str, Any]) -> list[dict[str, Any]]:
-    # author:xxrin
-    # LLM 실패 시 PM 검토를 위한 최소 의도 분류 초안을 만든다.
-    pr_context = _as_dict(state.get("pr_context"))
-    title = str(pr_context.get("title") or "").lower()
-    description = str(pr_context.get("description") or "").lower()
-    text = f"{title}\n{description}"
-    knowledge_text = str(state.get("dev_knowledge_context") or "").lower()
-    classifications: list[dict[str, Any]] = []
-    for gap in state.get("gap_report") or []:
-        gap_type = str(gap.get("type") or "").lower()
-        target = str(gap.get("spec_target") or "").lower()
-        intentional_hint = target and target in text
-        approved_knowledge_hint = (
-            target
-            and target in knowledge_text
-            and "approved_intentional_change" in knowledge_text
-        )
-        rejected_knowledge_hint = (
-            target
-            and target in knowledge_text
-            and "rejected_unintentional_change" in knowledge_text
-        )
-        if gap.get("spec_outdated_related") and not intentional_hint:
-            intent = "UNCERTAIN"
-            confidence = 0.55
-            action = "PM_REVIEW"
-        elif rejected_knowledge_hint:
-            intent = "UNINTENTIONAL"
-            confidence = 0.78
-            action = "REQUEST_FIX"
-        elif intentional_hint or approved_knowledge_hint:
-            intent = "INTENTIONAL"
-            confidence = 0.78 if approved_knowledge_hint else 0.72
-            action = "APPROVE_AS_INTENTIONAL"
-        else:
-            intent = "UNINTENTIONAL" if "missing" in gap_type else "UNCERTAIN"
-            confidence = 0.68 if intent == "UNINTENTIONAL" else 0.5
-            action = "REQUEST_FIX" if intent == "UNINTENTIONAL" else "PM_REVIEW"
-        reason_suffix = " Dev Tracking knowledge was considered." if approved_knowledge_hint or rejected_knowledge_hint else ""
-        classifications.append(
-            {
-                "gap_id": gap.get("gap_id"),
-                "intent": intent,
-                "confidence": confidence,
-                "reason": f"PR title/description and implementation profile were compared for {gap.get('spec_target')}.{reason_suffix}",
-                "recommended_action": action,
-            }
-        )
-    return classifications
-
-
 def _preliminary_uncertain_intent_classification(
     state: dict[str, Any],
     *,

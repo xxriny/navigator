@@ -350,6 +350,13 @@ def test_pr_status_check_updater_sets_success_for_no_gap(monkeypatch):
         {
             "notify_pr": True,
             "approval_status": "NO_GAP_DETECTED",
+            "implementation_evidence": {"complete": True, "head_sha": "abc123", "files": [{"file": "app/api/health.py", "symbols": [{"name": "health", "start_line": 1}]}]},
+            "published_spec_snapshot": {"api_contracts": [{"name": "health"}]},
+            "code_inventory": {"files": [{"file": "app/api/health.py"}], "symbols_by_file": {"app/api/health.py": [{"name": "health"}]}},
+            "implementation_profile": {"detected_apis": [{"name": "health", "file": "app/api/health.py"}]},
+            "checkout": {"head_sha_matched": True},
+            "forensic_profiler_meta": {"preliminary": False},
+            "gap_analyzer_meta": {"preliminary": False},
             "pr_context": {
                 "owner": "xxrin",
                 "repo": "navigator",
@@ -360,6 +367,23 @@ def test_pr_status_check_updater_sets_success_for_no_gap(monkeypatch):
 
     assert result["status"] == "PASS"
     assert captured["payload"]["state"] == "success"
+
+
+def test_pr_status_check_updater_does_not_publish_success_without_evidence(monkeypatch):
+    from pipeline.domain.dev_tracking import nodes
+
+    captured = {}
+    def fake_run_gh(args, cwd, input_text=None):
+        captured["state"] = json.loads(input_text)["state"]
+        return 0, "created", ""
+
+    monkeypatch.setattr(nodes, "_run_gh", fake_run_gh)
+    nodes.pr_status_check_updater({
+        "notify_pr": True,
+        "approval_status": "NO_GAP_DETECTED",
+        "pr_context": {"owner": "xxrin", "repo": "navigator", "head_sha": "abc123"},
+    })
+    assert captured["state"] == "pending"
 
 def test_pr_status_check_updater_warns_when_gh_fails(monkeypatch):
     from pipeline.domain.dev_tracking import nodes

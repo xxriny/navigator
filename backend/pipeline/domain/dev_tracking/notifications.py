@@ -4,6 +4,8 @@ import json
 import os
 from typing import Any, Callable
 
+from .evidence import build_security_gate
+from .security import validate_pr_comment_write
 from .utils import _as_dict
 
 
@@ -31,10 +33,23 @@ def pr_comment_notifier(
     pr_context = _as_dict(state.get("pr_context"))
     source_dir = str(state.get("source_dir") or os.getcwd())
     pm_report = _as_dict(state.get("pm_report"))
+    blockers = validate_pr_comment_write(state)
+    if blockers:
+        return {
+            "status": "WARN",
+            "pr_comment": {"comment_created": False, "blockers": blockers},
+            "dev_tracking_next_action": "task_coordinator",
+            "current_step": "pr_comment_notifier_done",
+        }
+    footer = (
+        "No blocking GAPs were verified."
+        if state.get("approval_status") == "NO_GAP_DETECTED" and build_security_gate(state)["success_eligible"]
+        else "PM approval is required in TaskApprovalPanel."
+    )
     body = (
         "## NAVIGATOR Dev Tracking Report\n\n"
         f"{pm_report.get('summary', 'GAP report is ready.')}\n\n"
-        "PM approval is required in TaskApprovalPanel."
+        f"{footer}"
     )
     code, out, err = run_gh(["pr", "comment", str(pr_context.get("pr_number")), "--body", body], source_dir, None)
     return {
@@ -54,7 +69,9 @@ def pr_comment_notifier(
 def _desired_status_check_for_state(state: dict[str, Any]) -> tuple[str, str]:
     approval_status = str(state.get("approval_status") or "")
     if approval_status == "NO_GAP_DETECTED":
-        return "success", "NAVIGATOR Dev Tracking completed without blocking GAPs."
+        if build_security_gate(state)["success_eligible"]:
+            return "success", "NAVIGATOR Dev Tracking completed without blocking GAPs."
+        return "pending", "NAVIGATOR Dev Tracking evidence requires PM review."
     if approval_status == "PENDING_PM_APPROVAL":
         return "pending", "NAVIGATOR Dev Tracking is waiting for PM approval."
     if approval_status == "APPROVED_INTENTIONAL_CHANGE":
@@ -139,6 +156,9 @@ def pr_status_check_updater(
 
     status_state, description = _desired_status_check_for_state(state)
     result = update_status_check(state, status_state, description)
+    result["security_gate_blocked"] = (
+        state.get("approval_status") == "NO_GAP_DETECTED" and status_state != "success"
+    )
     return {
         "status": result.get("status", "WARN"),
         "pr_status_check": result,

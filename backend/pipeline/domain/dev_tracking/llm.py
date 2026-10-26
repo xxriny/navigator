@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .evidence import implementation_evidence_from_state
 from .utils import _as_dict
 
 
@@ -99,34 +100,37 @@ def _validate_llm_implementation_profile(
     profile: dict[str, Any],
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    # author:xxrin
-    # 자동 오판 방지를 위해 LLM profiler가 실제 inventory 밖의 파일을 발명하지 못하게 막는다.
-    # 알 수 없는 파일은 에러 대신 필터링해 LLM 결과를 최대한 살린다.
     known_files = _inventory_file_set(state)
-
-    # file_role_map: 인벤토리에 없는 파일 경로 제거
+    symbols_by_file = _as_dict(_as_dict(state.get("code_inventory")).get("symbols_by_file"))
+    evidence = implementation_evidence_from_state(state)
+    if evidence:
+        if evidence.get("complete") is not True:
+            raise ValueError("AST implementation evidence is incomplete")
+        symbols_by_file = {
+            str(item.get("file") or ""): item.get("symbols") or []
+            for item in evidence.get("files") or []
+            if isinstance(item, dict)
+        }
+        known_files = set(symbols_by_file)
     role_map = _as_dict(profile.get("file_role_map"))
-    if known_files and role_map:
-        profile["file_role_map"] = {k: v for k, v in role_map.items() if k in known_files}
-
-    # detected_apis / detected_components: 유효하지 않은 항목 제거
+    if any(path not in known_files for path in role_map):
+        raise ValueError("LLM implementation profile references unknown file outside AST evidence")
     for field_name in ("detected_apis", "detected_components"):
         items = profile.get(field_name) or []
         if not isinstance(items, list):
-            profile[field_name] = []
-            continue
-        filtered = []
+            raise ValueError(f"LLM implementation profile {field_name} is not a list")
         for item in items:
             if not isinstance(item, dict):
-                continue
+                raise ValueError(f"LLM implementation profile {field_name} item is not an object")
             name = str(item.get("name") or "").strip()
             file_path = str(item.get("file") or "").strip()
             if not name or not file_path:
-                continue
-            if known_files and file_path not in known_files:
-                continue
-            filtered.append(item)
-        profile[field_name] = filtered
+                raise ValueError("LLM implementation profile item without name/file")
+            if file_path not in known_files:
+                raise ValueError(f"LLM implementation profile references unknown file outside AST evidence: {file_path}")
+            symbols = symbols_by_file.get(file_path) or []
+            if name not in {str(symbol.get("name") or "") for symbol in symbols if isinstance(symbol, dict)}:
+                raise ValueError(f"LLM implementation profile references unknown symbol outside AST evidence: {file_path}:{name}")
 
     return profile
 
@@ -166,6 +170,8 @@ def _validate_llm_intent_classification(
             raise ValueError(f"LLM intent classification {gap_id} has invalid confidence")
         if gap_id in preliminary_gap_ids and item.get("recommended_action") == "APPROVE_AS_INTENTIONAL":
             raise ValueError(f"LLM intent classifier approved preliminary gap_id: {gap_id}")
+        if item.get("recommended_action") == "APPROVE_AS_INTENTIONAL":
+            raise ValueError(f"LLM intent classifier cannot approve gap_id: {gap_id}")
 
     missing = sorted(known_gap_ids - seen)
     if missing:
