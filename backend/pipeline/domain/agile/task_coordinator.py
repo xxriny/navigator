@@ -236,19 +236,62 @@ def get_existing_feature_refs(team_id: str) -> set[str]:
         return {r[0] for r in rows}
 
 
-def assign_task(task_id: str, assignee: str, reviewed_by: str = "") -> dict | None:
-    """unassigned 태스크에 담당자를 지정하고 pending_approval로 전환."""
+def assign_task(
+    task_id: str,
+    assignee: str,
+    reviewed_by: str = "",
+    *,
+    team_id: str = "",
+    assignee_id: str = "",
+) -> dict | None:
+    """현재 팀의 미할당 태스크만 실제 팀원에게 배분한다."""
+    from auth.database import SharedSessionLocal
+    from auth.shared_models import TeamMember, User
+
+    if not team_id or not assignee_id:
+        return None
     init_tasks_db()
     with _Session() as session:
-        task = session.query(AgileTask).filter(AgileTask.id == task_id).first()
+        query = session.query(AgileTask).filter(
+            AgileTask.id == task_id,
+            AgileTask.team_id == team_id,
+            AgileTask.status == "unassigned",
+        )
+        task = query.first()
         if not task:
             return None
-        task.assignee = assignee
-        task.status = "pending_approval"
-        task.updated_at = _now()
+
+        with SharedSessionLocal() as shared:
+            member = shared.query(TeamMember.role, User.name).join(
+                User, User.id == TeamMember.user_id,
+            ).filter(
+                TeamMember.team_id == team_id,
+                TeamMember.user_id == assignee_id,
+            ).first()
+        allowed_areas = {
+            "software_engineer": {"backend", "frontend", "fullstack", "devops", "sa"},
+            "engineer": {"backend", "frontend", "fullstack", "devops", "sa"},
+            "backend": {"backend", "fullstack"},
+            "frontend": {"frontend", "fullstack"},
+            "devops": {"devops"},
+        }
+        if not member or member.name != assignee or not (
+            member.role in allowed_areas
+            and (not task.area or task.area in allowed_areas[member.role])
+        ):
+            return None
+
+        values = {
+            "assignee": assignee,
+            "status": "pending_approval",
+            "updated_at": _now(),
+        }
         if reviewed_by:
-            task.reviewed_by = reviewed_by
+            values["reviewed_by"] = reviewed_by
+        if not query.update(values, synchronize_session=False):
+            return None
         session.commit()
+        session.refresh(task)
         return _task_to_dict(task)
 
 
