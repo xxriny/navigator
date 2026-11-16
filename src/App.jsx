@@ -10,6 +10,7 @@ import SessionPanel from "./components/SessionPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import LoginScreen from "./components/auth/LoginScreen";
 import TeamCreateScreen from "./components/auth/TeamCreateScreen";
+import TeamChatPage from "./components/chat/TeamChatPage";
 import PricingScreen from "./components/billing/PricingScreen";
 
 import TopBar from "./components/layout/TopBar";
@@ -101,6 +102,9 @@ export default function App() {
   };
 
   const renderCenter = () => {
+    if (activeIconPanel === "team_chat") {
+      return <TeamChatPage onClose={() => setActiveIconPanel(null)} />;
+    }
     if (activeIconPanel) {
       const panel = ICON_PANELS.find(p => p.id === activeIconPanel);
       if (!panel) {
@@ -172,6 +176,8 @@ export default function App() {
         <WorkspaceSwitcher
           showSessions={showSessions}
           setShowSessions={setShowSessions}
+          isTeamChatOpen={activeIconPanel === "team_chat"}
+          onOpenTeamChat={() => handleIconPanel("team_chat")}
           onOpenGithub={() => { setShowGithubModal(true); setShowSessions(false); }}
           onOpenPricing={() => { setShowPricingModal(true); }}
         />

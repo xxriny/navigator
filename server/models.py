@@ -17,7 +17,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime,
-    ForeignKey, Index, Integer, String, Text,
+    ForeignKey, Index, Integer, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -212,4 +212,40 @@ class DirectMessage(Base):
         Index("ix_dm_receiver_read", "receiver_id", "is_read"),
         Index("ix_dm_team_created",  "team_id",     "created_at"),
     )
+
+
+class TeamChannel(Base):
+    __tablename__ = "team_channels"
+
+    id = Column(String(36), primary_key=True, default=_new_uuid)
+    team_id = Column(String(36), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(50), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("team_id", "name", name="uq_team_channels_team_name"),)
+
+
+class TeamChannelMessage(Base):
+    __tablename__ = "team_channel_messages"
+
+    id = Column(String(36), primary_key=True, default=_new_uuid)
+    team_id = Column(String(36), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    channel_id = Column(String(36), ForeignKey("team_channels.id", ondelete="CASCADE"), nullable=False)
+    sender_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    sender_name = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (Index("ix_team_channel_messages_channel_created", "channel_id", "created_at"),)
+
+
+class TeamChannelRead(Base):
+    __tablename__ = "team_channel_reads"
+
+    id = Column(String(36), primary_key=True, default=_new_uuid)
+    channel_id = Column(String(36), ForeignKey("team_channels.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    last_read_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (UniqueConstraint("channel_id", "user_id", name="uq_team_channel_reads_channel_user"),)
 

@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import useAppStore from "../../store/useAppStore";
 import { serverRequest } from "../../api/serverClient";
-import { Plus, Loader2, Check, X, Copy, LogOut, UserPlus, Users, Edit3, Moon, Sun, CreditCard, Library } from "lucide-react";
+import { Plus, Loader2, Check, X, Copy, LogOut, UserPlus, Users, Edit3, Moon, Sun, CreditCard, Library, MessagesSquare } from "lucide-react";
 
-export default function WorkspaceSwitcher({ onOpenGithub, onOpenPricing, onCreateTeam, showSessions, setShowSessions }) {
+export default function WorkspaceSwitcher({ onOpenGithub, onOpenPricing, onCreateTeam, showSessions, setShowSessions, onOpenTeamChat, isTeamChatOpen }) {
   const {
     myTeams, loadMyTeams, switchTeam, currentUser, isDarkMode, toggleDarkMode,
     teamWorkspaces, pipelineStatus,
@@ -134,6 +134,21 @@ export default function WorkspaceSwitcher({ onOpenGithub, onOpenPricing, onCreat
         } hover:border-dashed`}
       >
         <Plus size={20} />
+      </button>
+
+      <button
+        onClick={onOpenTeamChat}
+        title="팀 채팅"
+        aria-label="팀 채팅"
+        className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+          isTeamChatOpen
+            ? "bg-blue-600 text-white shadow-lg shadow-blue-500/30"
+            : isDarkMode
+            ? "text-slate-400 hover:text-white hover:bg-white/5"
+            : "text-slate-500 hover:bg-slate-100"
+        }`}
+      >
+        <MessagesSquare size={18} />
       </button>
 
       {/* 하단 유저 아바타 및 라이브러리 단축 버튼 */}
