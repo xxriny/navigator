@@ -161,31 +161,38 @@ def test_github_branches_endpoint_keeps_head_sha_for_ui(monkeypatch, github_oaut
     assert result["data"][0]["name"] == "feature/dev-tracking"
     assert result["data"][0]["sha"] == "abc123"
 
-def test_github_webhook_endpoint_ignores_non_pr_event():
-    from transport.rest_handler import github_webhook_endpoint
+def _signed_request(payload, event="pull_request"):
+    body = json.dumps(payload).encode("utf-8")
+    signature = "sha256=" + hmac.new(b"webhook-secret", body, hashlib.sha256).hexdigest()
 
     class FakeRequest:
-        headers = {"X-GitHub-Event": "push"}
+        headers = {"X-GitHub-Event": event, "X-Hub-Signature-256": signature}
 
         async def body(self):
-            return json.dumps({"ref": "refs/heads/main"}).encode("utf-8")
+            return body
 
-    result = asyncio.run(github_webhook_endpoint(FakeRequest(), shared_db=None))
+    return FakeRequest()
+
+
+def test_github_webhook_endpoint_ignores_non_pr_event(monkeypatch):
+    from transport.rest_handler import github_webhook_endpoint
+
+    monkeypatch.setenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+    result = asyncio.run(github_webhook_endpoint(
+        _signed_request({"ref": "refs/heads/main"}, "push"), shared_db=None,
+    ))
 
     assert result["status"] == "ok"
     assert result["handled"] is False
     assert "ignored event" in result["reason"]
 
-def test_github_webhook_endpoint_ignores_unsupported_pr_action():
+def test_github_webhook_endpoint_ignores_unsupported_pr_action(monkeypatch):
     from transport.rest_handler import github_webhook_endpoint
 
-    class FakeRequest:
-        headers = {"X-GitHub-Event": "pull_request"}
-
-        async def body(self):
-            return json.dumps(_github_pr_payload(action="closed")).encode("utf-8")
-
-    result = asyncio.run(github_webhook_endpoint(FakeRequest(), shared_db=None))
+    monkeypatch.setenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+    result = asyncio.run(github_webhook_endpoint(
+        _signed_request(_github_pr_payload(action="closed")), shared_db=None,
+    ))
 
     assert result["status"] == "ok"
     assert result["handled"] is False
@@ -204,19 +211,14 @@ def test_github_webhook_endpoint_runs_dev_tracking_for_opened_pr(monkeypatch):
     monkeypatch.setattr(dev_tracking, "run_dev_tracking_analysis", fake_run_dev_tracking_analysis)
     monkeypatch.setenv("NAVIGATOR_GITHUB_TOKEN", "token-123")
     monkeypatch.setenv("NAVIGATOR_DEFAULT_TEAM_ID", "team-1")
-    monkeypatch.delenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", raising=False)
-
-    class FakeRequest:
-        headers = {"X-GitHub-Event": "pull_request"}
-
-        async def body(self):
-            return json.dumps(_github_pr_payload(action="opened")).encode("utf-8")
-
-    result = asyncio.run(github_webhook_endpoint(FakeRequest(), shared_db=_FakeWebhookSharedDB()))
+    monkeypatch.setenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+    result = asyncio.run(github_webhook_endpoint(
+        _signed_request(_github_pr_payload(action="opened")), shared_db=_FakeWebhookSharedDB(),
+    ))
 
     assert result["status"] == "ok"
     assert result["handled"] is True
-    assert result["signature_verified"] is False
+    assert result["signature_verified"] is True
     assert captured["repository"] == {"owner": "xxrin", "repo": "navigator"}
     assert captured["pull_request"]["pr_number"] == 17
     assert captured["source_dir"] == ""
@@ -236,15 +238,10 @@ def test_github_webhook_endpoint_rejects_unlinked_actor(monkeypatch):
         return {"status": "pending_pm_approval", "timeline": [], "data": {}}
 
     monkeypatch.setattr(dev_tracking, "run_dev_tracking_analysis", fake_run_dev_tracking_analysis)
-    monkeypatch.delenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", raising=False)
-
-    class FakeRequest:
-        headers = {"X-GitHub-Event": "pull_request"}
-
-        async def body(self):
-            return json.dumps(_github_pr_payload(action="opened")).encode("utf-8")
-
-    result = asyncio.run(github_webhook_endpoint(FakeRequest(), shared_db=_FakeWebhookSharedDB(user=None)))
+    monkeypatch.setenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+    result = asyncio.run(github_webhook_endpoint(
+        _signed_request(_github_pr_payload(action="opened")), shared_db=_FakeWebhookSharedDB(user=None),
+    ))
 
     assert result["status"] == "error"
     assert result["handled"] is False
@@ -287,14 +284,9 @@ def test_github_webhook_endpoint_skips_duplicate_head_sha(monkeypatch):
 
     monkeypatch.setattr(dev_tracking, "run_dev_tracking_analysis", fake_run_dev_tracking_analysis)
 
-    class FakeRequest:
-        headers = {"X-GitHub-Event": "pull_request"}
-
-        async def body(self):
-            return json.dumps(_github_pr_payload(action="opened")).encode("utf-8")
-
+    monkeypatch.setenv("NAVIGATOR_GITHUB_WEBHOOK_SECRET", "webhook-secret")
     result = asyncio.run(github_webhook_endpoint(
-        FakeRequest(),
+        _signed_request(_github_pr_payload(action="opened")),
         shared_db=_FakeWebhookSharedDB(duplicate=FakeAnalysis()),
     ))
 

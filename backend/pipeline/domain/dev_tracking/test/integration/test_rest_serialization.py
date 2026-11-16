@@ -166,6 +166,7 @@ def test_dev_gap_item_decision_endpoints_update_item_and_analysis_status(dev_ana
 
 def test_dev_gap_item_final_approval_triggers_task_level_followup(monkeypatch, dev_analysis_db_session, pm_user):
     from auth.shared_models import DevGapItem, DevPrAnalysis
+    from pipeline.domain.agile import task_coordinator
     import transport.rest_handler as rest_handler
     from transport.rest_handler import DevGapDecisionRequest, dev_gap_item_approve_endpoint
 
@@ -179,6 +180,7 @@ def test_dev_gap_item_final_approval_triggers_task_level_followup(monkeypatch, d
         return {"status": "ok", "data": {"id": task_id, "status": "completed"}}
 
     monkeypatch.setattr(rest_handler, "_run_dev_gap_decision", fake_run_dev_gap_decision)
+    monkeypatch.setattr(task_coordinator, "get_task", lambda task_id: {"id": task_id, "team_id": pm_user.team_id})
 
     analysis = DevPrAnalysis(
         team_id="team-1",

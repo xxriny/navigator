@@ -140,6 +140,23 @@ def test_branch_fetcher_verifies_provided_worktree_git_file(monkeypatch, tmp_pat
     assert result["status"] == "PASS"
     assert result["checkout"]["head_sha_matched"] is True
 
+
+def test_branch_fetcher_blocks_mismatched_provided_git_head(monkeypatch, tmp_path):
+    from pipeline.domain.dev_tracking import nodes
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(nodes, "_run_git", lambda args, cwd: (0, "different-sha\n", ""))
+
+    result = nodes.branch_fetcher({
+        "source_dir": str(tmp_path),
+        "pr_context": {"head_sha": "abc123"},
+    })
+
+    assert result["status"] == "FAIL"
+    assert result["error_type"] == "HEAD_SHA_MISMATCH"
+    assert result["dev_tracking_next_action"] == "blocked"
+    assert result["checkout"]["head_sha_matched"] is False
+
 def test_reverse_analyzer_returns_inventory_without_separate_builder(monkeypatch, tmp_path):
     import orchestration.pipeline_runner as pipeline_runner
     from pipeline.domain.dev_tracking import nodes

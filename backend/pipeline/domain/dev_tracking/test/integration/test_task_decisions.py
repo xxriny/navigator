@@ -7,6 +7,9 @@ import json
 import subprocess
 import types
 
+import pytest
+from fastapi import HTTPException
+
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../"))
 if BACKEND_DIR not in sys.path:
@@ -30,6 +33,7 @@ def test_dev_gap_approval_endpoint_updates_success_status(monkeypatch, pm_user):
     stored_results = []
     task = {
         "id": "task-1",
+        "team_id": "team-1",
         "task_type": "dev_gap_approval",
         "status": "in_progress",
         "payload": {
@@ -98,6 +102,7 @@ def test_dev_gap_rejection_endpoint_updates_failure_status(monkeypatch, admin_us
     stored_results = []
     task = {
         "id": "task-1",
+        "team_id": "team-1",
         "task_type": "dev_gap_approval",
         "status": "rejected",
         "payload": {
@@ -177,6 +182,7 @@ def test_dev_gap_approve_endpoint_uses_explicit_contract(monkeypatch, pm_user):
     stored_results = []
     task = {
         "id": "task-1",
+        "team_id": "team-1",
         "task_type": "dev_gap_approval",
         "status": "pending_approval",
         "payload": {"pr_context": {"owner": "xxrin", "repo": "navigator", "head_sha": "abc123"}},
@@ -278,7 +284,7 @@ def test_dev_gap_approval_requires_authenticated_pm(monkeypatch):
     import pipeline.domain.agile.task_coordinator as agile_task_coordinator
     from transport.rest_handler import TaskUpdateRequest, update_task_endpoint
 
-    task = {"id": "task-1", "task_type": "dev_gap_approval", "status": "pending_approval", "payload": {}}
+    task = {"id": "task-1", "team_id": "team-1", "task_type": "dev_gap_approval", "status": "pending_approval", "payload": {}}
     called = {"updated": False}
 
     monkeypatch.setattr(agile_task_coordinator, "init_tasks_db", lambda: None)
@@ -290,23 +296,18 @@ def test_dev_gap_approval_requires_authenticated_pm(monkeypatch):
 
     monkeypatch.setattr(agile_task_coordinator, "update_task_status", fake_update_task_status)
 
-    result = asyncio.run(
-        update_task_endpoint(
-            "task-1",
-            TaskUpdateRequest(status="in_progress"),
-            current_user=None,
-        )
-    )
-
-    assert result["status"] == "error"
-    assert "Authentication required" in result["error"]
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(update_task_endpoint(
+            "task-1", TaskUpdateRequest(status="in_progress"), current_user=None,
+        ))
+    assert denied.value.status_code == 401
     assert called["updated"] is False
 
 def test_dev_gap_approval_rejects_engineer_role(monkeypatch, engineer_user):
     import pipeline.domain.agile.task_coordinator as agile_task_coordinator
     from transport.rest_handler import TaskUpdateRequest, update_task_endpoint
 
-    task = {"id": "task-1", "task_type": "dev_gap_approval", "status": "pending_approval", "payload": {}}
+    task = {"id": "task-1", "team_id": "team-1", "task_type": "dev_gap_approval", "status": "pending_approval", "payload": {}}
     called = {"updated": False}
 
     monkeypatch.setattr(agile_task_coordinator, "init_tasks_db", lambda: None)
@@ -330,11 +331,11 @@ def test_dev_gap_approval_rejects_engineer_role(monkeypatch, engineer_user):
     assert "PM or admin" in result["error"]
     assert called["updated"] is False
 
-def test_regular_task_update_keeps_legacy_optional_auth(monkeypatch):
+def test_regular_task_update_requires_authentication(monkeypatch):
     import pipeline.domain.agile.task_coordinator as agile_task_coordinator
     from transport.rest_handler import TaskUpdateRequest, update_task_endpoint
 
-    task = {"id": "task-1", "task_type": "feature", "status": "pending_approval", "payload": {}}
+    task = {"id": "task-1", "team_id": "team-1", "task_type": "feature", "status": "pending_approval", "payload": {}}
 
     monkeypatch.setattr(agile_task_coordinator, "init_tasks_db", lambda: None)
     monkeypatch.setattr(agile_task_coordinator, "get_task", lambda task_id: task)
@@ -347,14 +348,9 @@ def test_regular_task_update_keeps_legacy_optional_auth(monkeypatch):
 
     monkeypatch.setattr(agile_task_coordinator, "update_task_status", fake_update_task_status)
 
-    result = asyncio.run(
-        update_task_endpoint(
-            "task-1",
-            TaskUpdateRequest(status="in_progress", reviewed_by="legacy-user"),
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(update_task_endpoint(
+            "task-1", TaskUpdateRequest(status="in_progress", reviewed_by="legacy-user"),
             current_user=None,
-        )
-    )
-
-    assert result["status"] == "ok"
-    assert result["data"]["status"] == "in_progress"
-    assert result["data"]["reviewed_by"] == "legacy-user"
+        ))
+    assert denied.value.status_code == 401
