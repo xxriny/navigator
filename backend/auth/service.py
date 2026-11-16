@@ -6,7 +6,6 @@ GitHub 연동에는 githubkit과 httpx를 혼합 사용합니다.
 from __future__ import annotations
 
 import os
-import uuid
 import urllib.parse
 import httpx
 from datetime import datetime, timedelta
@@ -99,6 +98,7 @@ def create_user(
         name=name,
         email=email,
         password_hash=hash_password(password),
+        signup_method="email",
         role=role,
         github_username=github_username,
         team_id=team.id if team else None,
@@ -263,7 +263,8 @@ def create_or_update_github_user(
         user = User(
             name=name,
             email=email,
-            password_hash=hash_password(str(uuid.uuid4())),
+            password_hash="",
+            signup_method="github",
             #author: xxrin
             # GitHub OAuth 신규 유저 생성 시 role CHECK 제약 오류를 피하기 위해 허용된 role만 저장한다.
             role="software_engineer",

@@ -149,6 +149,7 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
         name=req.name,
         email=req.email,
         password_hash=_hash(req.password),
+        signup_method="email",
         role=role,
         github_username=req.github_username,
         team_id=team.id if team else None,
@@ -803,6 +804,7 @@ async def github_device_poll(
     if not user:
         user = User(
             name=name, email=email, password_hash="",
+            signup_method="github",
             role="software_engineer",
             github_id=github_id,
             github_login=login,

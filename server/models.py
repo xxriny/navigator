@@ -65,6 +65,7 @@ class User(Base):
     github_login       = Column(String(255), nullable=True)
     github_oauth_token = Column(String(500), nullable=True)
     password_hash      = Column(String(255), nullable=False, default="")
+    signup_method      = Column(String(16), nullable=True)
     created_at         = Column(DateTime,    default=datetime.utcnow)
 
     team = relationship("Team", back_populates="users")

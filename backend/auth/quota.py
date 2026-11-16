@@ -20,8 +20,8 @@ class EmailModelUsage(Base):
 
 
 def reserve_model_call(db, user) -> bool:
-    # GitHub-only accounts have no password; linking GitHub later keeps an email account limited.
-    if not user.password_hash:
+    # Signup origin stays fixed when an email account later links GitHub.
+    if user.signup_method == "github":
         return True
     try:
         count = db.execute(text("""
