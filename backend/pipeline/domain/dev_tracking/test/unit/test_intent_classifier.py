@@ -31,7 +31,7 @@ def test_intent_classifier_uses_mocked_llm(monkeypatch):
                 intent="INTENTIONAL",
                 confidence=0.91,
                 reason="PR description explicitly mentions this contract change.",
-                recommended_action="APPROVE_AS_INTENTIONAL",
+                recommended_action="PM_REVIEW",
             )
         ]
 
@@ -73,7 +73,7 @@ def test_intent_classifier_uses_mocked_llm(monkeypatch):
     assert result["status"] == "PASS"
     assert result["intent_classifier_meta"]["mode"] == "llm"
     assert result["intent_classification"][0]["intent"] == "INTENTIONAL"
-    assert result["intent_classification"][0]["recommended_action"] == "APPROVE_AS_INTENTIONAL"
+    assert result["intent_classification"][0]["recommended_action"] == "PM_REVIEW"
 
 def test_intent_classifier_falls_back_when_llm_fails(monkeypatch):
     from pipeline.domain.dev_tracking import nodes

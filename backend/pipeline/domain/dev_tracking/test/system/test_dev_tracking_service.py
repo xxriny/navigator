@@ -172,11 +172,12 @@ def test_dev_tracking_service_returns_pending_after_completed_graph(monkeypatch,
     )
     node_names = [item["node"] for item in result["timeline"]]
 
-    assert result["status"] == "complete"
+    assert result["status"] == "error"
+    assert result["data"]["current_step"] == "gap_analyzer_failed"
     assert called["shared_db_seen"] is True
     assert called["intent"] is False
     assert "intent_classifier" not in node_names
-    assert "milestone_tracker" in node_names
+    assert "milestone_tracker" not in node_names
     assert "_shared_db" not in result["data"]
 
     graphs._PipelineRegistry._cache.clear()

@@ -72,7 +72,7 @@ def test_code_inventory_builder_scans_temp_project(tmp_path):
     assert result["code_inventory"]["summary"]["file_count"] == 2
     assert result["code_inventory"]["summary"]["symbol_count"] >= 2
 
-def test_branch_fetcher_resets_repo_cache_to_webhook_head_sha(monkeypatch, tmp_path):
+def test_branch_fetcher_uses_worktree_at_webhook_head_sha(monkeypatch, tmp_path):
     from pipeline.domain.dev_tracking import nodes
     import connectors.repo_cache as repo_cache
 
@@ -103,8 +103,41 @@ def test_branch_fetcher_resets_repo_cache_to_webhook_head_sha(monkeypatch, tmp_p
     })
 
     assert result["status"] == "PASS"
-    assert ["reset", "--hard", "abc123"] in calls
-    assert result["checkout"]["reset_to_head_sha"] is True
+    assert any(args[:3] == ["worktree", "add", "--detach"] and args[-1] == "abc123" for args in calls)
+    assert result["checkout"]["worktree_used"] is True
+    assert result["checkout"]["head_sha_matched"] is True
+
+
+def test_branch_fetcher_blocks_mismatched_provided_git_head(monkeypatch, tmp_path):
+    from pipeline.domain.dev_tracking import nodes
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(nodes, "_run_git", lambda args, cwd: (0, "different-sha\n", ""))
+
+    result = nodes.branch_fetcher({
+        "source_dir": str(tmp_path),
+        "pr_context": {"head_sha": "abc123"},
+    })
+
+    assert result["status"] == "FAIL"
+    assert result["error_type"] == "HEAD_SHA_MISMATCH"
+    assert result["dev_tracking_next_action"] == "blocked"
+    assert result["checkout"]["head_sha_matched"] is False
+
+
+def test_branch_fetcher_verifies_provided_worktree_git_file(monkeypatch, tmp_path):
+    from pipeline.domain.dev_tracking import nodes
+
+    (tmp_path / ".git").write_text("gitdir: /unused", encoding="utf-8")
+    monkeypatch.setattr(nodes, "_run_git", lambda args, cwd: (0, "abc123def\n", ""))
+    monkeypatch.setattr(nodes, "_changed_files_from_git", lambda repo_path, base_branch: [])
+
+    result = nodes.branch_fetcher({
+        "source_dir": str(tmp_path),
+        "pr_context": {"head_sha": "abc123"},
+    })
+
+    assert result["status"] == "PASS"
     assert result["checkout"]["head_sha_matched"] is True
 
 def test_reverse_analyzer_returns_inventory_without_separate_builder(monkeypatch, tmp_path):

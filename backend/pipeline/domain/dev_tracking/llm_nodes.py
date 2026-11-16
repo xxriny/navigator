@@ -17,10 +17,31 @@ from .schemas import (
     DevGapReportResponse,
     DevImplementationProfileResponse,
 )
+from .evidence import implementation_evidence_from_state
+from .security import (
+    UNTRUSTED_DATA_BOUNDARY,
+    build_safe_code_reference,
+    build_safe_knowledge_reference,
+    build_safe_spec_reference,
+    build_untrusted_pr_reference,
+)
 from .utils import _as_dict
 
 
 StructuredCall = Callable[..., Any]
+
+
+def _safe_dev_knowledge_reference(state: dict[str, Any]) -> list[dict[str, Any]]:
+    pr_context = _as_dict(state.get("pr_context"))
+    dev_knowledge = _as_dict(state.get("dev_knowledge"))
+    if not all((state.get("team_id"), pr_context.get("owner"), pr_context.get("repo"))):
+        return []
+    return build_safe_knowledge_reference(
+        dev_knowledge.get("artifacts"),
+        expected_team_id=str(state.get("team_id") or ""),
+        expected_repository_owner=str(pr_context.get("owner") or ""),
+        expected_repository_name=str(pr_context.get("repo") or ""),
+    )
 
 
 FORENSIC_PROFILE_PROMPT = (
@@ -218,9 +239,11 @@ def _llm_implementation_profile(
     changed_files = _changed_file_set(state)
     inventory = _prioritize_inventory_for_pr(_as_dict(state.get("code_inventory")), changed_files)
     context = {
-        "code_inventory": inventory,
-        "project_context": state.get("project_context", ""),
-        "pr_context": pr_context,
+        "code_inventory": build_safe_code_reference(
+            implementation_evidence_from_state(state),
+            inventory,
+        ),
+        "pr_reference": build_untrusted_pr_reference(pr_context),
         "changed_files": sorted(changed_files),
     }
     user_msg = json.dumps(context, ensure_ascii=False, default=str)
@@ -242,7 +265,7 @@ def _llm_implementation_profile(
         api_key=str(state.get("api_key") or ""),
         model=str(state.get("model") or DEFAULT_MODEL),
         schema=DevImplementationProfileResponse,
-        system_prompt=FORENSIC_PROFILE_PROMPT,
+        system_prompt=f"{FORENSIC_PROFILE_PROMPT}\n\n{UNTRUSTED_DATA_BOUNDARY}",
         user_msg=compressed_msg,
         temperature=0.1,
     )
@@ -272,14 +295,15 @@ def _llm_gap_report(
     validate_llm_gap_report: Callable[[list[dict[str, Any]], dict[str, Any]], list[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     snapshot = _as_dict(state.get("published_spec_snapshot"))
-    profile = _as_dict(state.get("implementation_profile"))
     changed_files = _changed_file_set(state)
     context = {
-        "published_spec_snapshot": snapshot,
-        "implementation_profile": profile,
+        "published_spec_snapshot": build_safe_spec_reference(snapshot),
+        "implementation_evidence": build_safe_code_reference(
+            implementation_evidence_from_state(state),
+            _as_dict(state.get("code_inventory")),
+        ),
         "spec_outdated": bool(state.get("spec_outdated")),
-        "project_context": state.get("project_context", ""),
-        "dev_knowledge_context": state.get("dev_knowledge_context", ""),
+        "dev_knowledge": _safe_dev_knowledge_reference(state),
         "changed_files": sorted(changed_files),
     }
     user_msg = json.dumps(context, ensure_ascii=False, default=str)
@@ -305,7 +329,7 @@ def _llm_gap_report(
         api_key=str(state.get("api_key") or ""),
         model=str(state.get("model") or DEFAULT_MODEL),
         schema=DevGapReportResponse,
-        system_prompt=GAP_REPORT_PROMPT,
+        system_prompt=f"{GAP_REPORT_PROMPT}\n\n{UNTRUSTED_DATA_BOUNDARY}",
         user_msg=compressed_msg,
         temperature=0.1,
     )
@@ -342,12 +366,16 @@ def _llm_intent_classification(
         *[str(gap.get("spec_target") or "") for gap in gaps if isinstance(gap, dict)],
     ]
     context = {
-        "pr_context": pr_context,
+        "pr_reference": build_untrusted_pr_reference(pr_context),
         "gap_report": gaps,
-        "implementation_summary": _as_dict(state.get("implementation_profile")).get("implementation_summary", ""),
-        "project_context": state.get("project_context", ""),
-        "dev_tracking_knowledge": state.get("dev_knowledge_context", ""),
-        "published_spec_snapshot": state.get("published_spec_snapshot") or {},
+        "implementation_evidence": build_safe_code_reference(
+            implementation_evidence_from_state(state),
+            _as_dict(state.get("code_inventory")),
+        ),
+        "dev_tracking_knowledge": _safe_dev_knowledge_reference(state),
+        "published_spec_snapshot": build_safe_spec_reference(
+            _as_dict(state.get("published_spec_snapshot"))
+        ),
         "spec_outdated": bool(state.get("spec_outdated")),
     }
     user_msg = json.dumps(context, ensure_ascii=False, default=str)
@@ -361,7 +389,7 @@ def _llm_intent_classification(
         api_key=str(state.get("api_key") or ""),
         model=str(state.get("model") or DEFAULT_MODEL),
         schema=DevGapIntentResponse,
-        system_prompt=INTENT_CLASSIFICATION_PROMPT,
+        system_prompt=f"{INTENT_CLASSIFICATION_PROMPT}\n\n{UNTRUSTED_DATA_BOUNDARY}",
         user_msg=compressed_msg,
         temperature=0.1,
     )

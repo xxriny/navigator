@@ -69,13 +69,37 @@ def test_dev_tracking_graph_blocks_invalid_payload_before_task_creation(monkeypa
     assert called["task"] is False
     assert "_shared_db" not in result["data"]
 
-def test_dev_tracking_graph_skips_intent_classifier_when_gap_absent(monkeypatch, tmp_path):
+def test_dev_tracking_graph_preserves_ast_evidence_for_success_gate(monkeypatch, tmp_path):
     import pipeline.orchestration.dev_tracking_graphs as graphs
     from pipeline.domain.dev_tracking.service import run_dev_tracking_analysis
     import pipeline.domain.dev_tracking.nodes as dev_nodes
-    import pipeline.domain.agile.task_coordinator as agile_task_coordinator
 
     graphs._PipelineRegistry._cache.clear()
+    source = tmp_path / "app" / "api"
+    source.mkdir(parents=True)
+    (source / "health.py").write_text("def health():\n    return True\n", encoding="utf-8")
+    monkeypatch.setattr(dev_nodes, "branch_fetcher", lambda state: {
+        "status": "PASS",
+        "source_dir": str(tmp_path),
+        "checkout": {"head_sha_matched": True, "actual_sha": "abc123def"},
+        "dev_tracking_next_action": "reverse_analyzer",
+    })
+    monkeypatch.setattr(dev_nodes, "spec_loader", lambda state, shared_db=None: {
+        "status": "PASS",
+        "published_spec_snapshot": {"api_contracts": [{"name": "health"}]},
+        "dev_tracking_next_action": "gap_analyzer",
+    })
+
+    result = run_dev_tracking_analysis({
+        **_valid_payload(source_dir=str(tmp_path)),
+        "use_llm_forensic_profiler": False,
+        "use_llm_gap_analyzer": False,
+    })
+
+    assert result["status"] == "complete"
+    assert result["data"]["code_inventory"]["implementation_evidence"]["complete"] is True
+    assert result["data"]["pm_report"]["security_gate"]["success_eligible"] is True
+    assert result["data"].get("approval_task") is None
 
 def test_dev_tracking_graph_calls_three_llm_paths_for_high_gap(monkeypatch, tmp_path):
     # author:xxrin

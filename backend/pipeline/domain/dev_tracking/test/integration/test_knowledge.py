@@ -34,8 +34,9 @@ def test_query_dev_knowledge_artifacts_returns_prompt_context(dev_knowledge_db_s
             pr_number=11,
             branch_name="feature/dev-tracking",
             task_id="task-1",
+            source="dev_tracking",
             decision_status="APPROVED_INTENTIONAL_CHANGE",
-            content_json=json.dumps({"gap": "auth endpoint"}),
+            content_json=json.dumps({"gap_report": [{"gap_id": "GAP_001"}]}),
             searchable_text="GAP_001 auth endpoint approved intentional change",
         )
     )
@@ -63,7 +64,7 @@ def test_query_dev_knowledge_artifacts_returns_prompt_context(dev_knowledge_db_s
     assert result["count"] == 1
     assert result["artifacts"][0]["artifact_type"] == "DEV_GAP_DECISION"
     assert "APPROVED_INTENTIONAL_CHANGE" in result["context_text"]
-    assert "auth endpoint" in result["context_text"]
+    assert "GAP_001" in result["context_text"]
 
 def test_dev_knowledge_loader_fetches_context_for_intent_classifier(dev_knowledge_db_session):
     from auth.shared_models import DevKnowledgeArtifact
@@ -76,8 +77,10 @@ def test_dev_knowledge_loader_fetches_context_for_intent_classifier(dev_knowledg
             owner="xxrin",
             repo="navigator",
             pr_number=11,
+            task_id="task-1",
+            source="dev_tracking",
             decision_status="APPROVED_INTENTIONAL_CHANGE",
-            content_json="{}",
+            content_json=json.dumps({"gap_report": [{"gap_id": "GAP_001"}]}),
             searchable_text="get /api/auth APPROVED_INTENTIONAL_CHANGE",
         )
     )

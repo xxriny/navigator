@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .evidence import build_security_gate
 from .context_compaction import _changed_file_set, _compact_inventory_for_approval_task
 from .utils import _as_dict
 
@@ -16,6 +17,13 @@ def task_coordinator(
 ) -> dict[str, Any]:
     # author:xxrin
     # PM 승인 대기 작업을 기존 agile_tasks 큐에 저장한다.
+    if state.get("approval_status") == "NO_GAP_DETECTED" and build_security_gate(state)["success_eligible"]:
+        return {
+            "status": "SKIPPED",
+            "approval_task": None,
+            "dev_tracking_next_action": "develop_embedding",
+            "current_step": "task_coordinator_done",
+        }
     pr_context = _as_dict(state.get("pr_context"))
     pm_report = _as_dict(state.get("pm_report"))
     changed_files = _changed_file_set(state)
