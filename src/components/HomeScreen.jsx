@@ -528,6 +528,7 @@ function PlusMenu({ isDarkMode, onAttach, onClose }) {
       form.append("file", file);
       const res = await fetch(`${apiBaseUrl(backendPort)}/api/upload-doc`, {
         method: "POST",
+        headers: useAppStore.getState().getAuthHeader(),
         body: form,
       });
       const data = await res.json();

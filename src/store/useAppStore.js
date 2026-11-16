@@ -44,7 +44,7 @@ const useAppStore = create((set, get) => {
 
       if (backendPort && runId) {
         try {
-          await fetch(`${apiBaseUrl(backendPort)}/api/session/${runId}`, { method: "DELETE" });
+          await fetch(`${apiBaseUrl(backendPort)}/api/session/${runId}`, { method: "DELETE", headers: get().getAuthHeader() });
         } catch (e) { console.error("[DeleteSession] API Failed:", e); }
       }
 

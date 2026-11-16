@@ -10,6 +10,9 @@ import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from auth.database import SessionLocal
+from auth.service import decode_token, get_user_by_id
+from auth.quota import check_model_call
 from transport.connection_manager import manager
 from observability.logger import get_logger
 
@@ -39,6 +42,26 @@ async def _safe_send_error(websocket: WebSocket, message: str) -> None:
         get_logger().warning(f"[WS] failed to send error frame: {send_err}")
 
 
+def _authenticated_user(payload: dict):
+    if not isinstance(payload, dict):
+        return None
+    raw_token = payload.get("auth_token")
+    if not isinstance(raw_token, str) or not raw_token:
+        return None
+    token = decode_token(raw_token)
+    if not token:
+        return None
+    db = SessionLocal()
+    try:
+        user = get_user_by_id(db, token.get("sub", ""))
+        return user if user and user.team_id else None
+    except Exception:
+        get_logger().exception("WebSocket user lookup failed")
+        return None
+    finally:
+        db.close()
+
+
 async def websocket_pipeline(websocket: WebSocket):
     """
     WebSocket 파이프라인 엔드포인트.
@@ -66,6 +89,19 @@ async def websocket_pipeline(websocket: WebSocket):
 
             msg_type = msg.get("type", "")
             payload = msg.get("payload", {})
+
+            if msg_type in {"analyze", "idea_chat"}:
+                user = _authenticated_user(payload)
+                if not user:
+                    await _safe_send_error(websocket, "인증이 필요합니다.")
+                    continue
+                if msg_type == "analyze" and user.role != "pm":
+                    await _safe_send_error(websocket, "LLM 분석은 PM 권한이 필요합니다.")
+                    continue
+                quota = check_model_call(payload["auth_token"])
+                if quota != "allowed":
+                    await _safe_send_error(websocket, "이메일 가입 계정의 모델 호출 10회를 모두 사용했거나 한도를 확인할 수 없습니다.")
+                    continue
 
             if msg_type == "analyze":
                 try:

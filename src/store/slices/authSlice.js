@@ -272,6 +272,7 @@ export const createAuthSlice = (set, get) => ({
       if (data.access_token) {
         get().setAuth(data.access_token, data.user);
         set({ hasUsers: true });
+        return { status: "ok" };
       }
       return data;
     } catch (e) {

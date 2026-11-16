@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from version import APP_VERSION
 
 # ── 경로 설정 ────────────────────────────────────────────
@@ -46,6 +46,8 @@ except ImportError:
 
 # ── 계층 임포트 ──────────────────────────────────────────
 from transport.rest_handler import rest_router
+from transport.account_proxy import account_router
+from transport.public_guard import check_public_api
 from transport.team_router import team_router
 from transport.message_router import message_router
 from transport.ws_handler import websocket_pipeline
@@ -53,6 +55,7 @@ from observability.metrics import make_metrics_app
 from observability.logger import get_logger
 from auth.router import auth_router
 from auth.database import init_db
+from auth.quota import MODEL_HTTP_PATHS, check_model_call
 
 ALLOWED_ORIGIN_REGEX = os.environ.get(
     "NAVIGATOR_ALLOWED_ORIGIN_REGEX",
@@ -89,8 +92,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def limit_email_model_calls(request, call_next):
+    if request.method == "POST" and request.url.path in MODEL_HTTP_PATHS:
+        authorization = request.headers.get("authorization", "")
+        parts = authorization.split()
+        token = parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else ""
+        result = check_model_call(token)
+        if result != "allowed":
+            status = {"unauthorized": 401, "limited": 429, "unavailable": 503}[result]
+            return JSONResponse({"detail": "모델 호출 한도를 확인할 수 없습니다." if status == 503 else
+                                 "이메일 가입 계정의 모델 호출 10회를 모두 사용했습니다." if status == 429 else
+                                 "인증이 필요합니다."}, status_code=status)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def protect_public_api(request, call_next):
+    denied = await check_public_api(request)
+    return denied if denied is not None else await call_next(request)
+
 # ── 라우터 등록 ──────────────────────────────────────────
 app.include_router(auth_router)
+app.include_router(account_router)
 app.include_router(team_router)
 app.include_router(message_router)
 app.include_router(rest_router)

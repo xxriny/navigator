@@ -137,26 +137,26 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
     # 팀 처리
     team: Optional[Team] = None
     if req.team_name:
-        team = db.query(Team).filter(Team.name == req.team_name).first()
-        if not team:
-            team = Team(name=req.team_name)
-            db.add(team)
-            db.flush()
-            # 팀 생성 시 free 구독 자동 생성
-            db.add(Subscription(team_id=team.id, plan="free", status="active"))
+        if db.query(Team).filter(Team.name == req.team_name).first():
+            raise HTTPException(status_code=403, detail="기존 팀은 초대 코드로만 합류할 수 있습니다.")
+        team = Team(name=req.team_name)
+        db.add(team)
+        db.flush()
+        db.add(Subscription(team_id=team.id, plan="free", status="active"))
 
+    role = "pm" if team else "software_engineer"
     user = User(
         name=req.name,
         email=req.email,
         password_hash=_hash(req.password),
-        role=req.role,
+        role=role,
         github_username=req.github_username,
         team_id=team.id if team else None,
     )
     db.add(user)
     db.flush()
     if team:
-        db.add(TeamMember(user_id=user.id, team_id=team.id, role=req.role))
+        db.add(TeamMember(user_id=user.id, team_id=team.id, role=role))
     db.commit()
     db.refresh(user)
 
@@ -803,7 +803,7 @@ async def github_device_poll(
     if not user:
         user = User(
             name=name, email=email, password_hash="",
-            role="engineer",
+            role="software_engineer",
             github_id=github_id,
             github_login=login,
             github_username=login,

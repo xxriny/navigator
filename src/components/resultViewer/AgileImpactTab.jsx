@@ -59,7 +59,7 @@ export default function AgileImpactTab() {
     try {
       const res = await fetch(`${apiBaseUrl(port)}/api/agile/impact`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken || ""}` },
         body: JSON.stringify({
           change_description: changeDesc,
           sa_data: {

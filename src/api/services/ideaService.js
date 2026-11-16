@@ -9,6 +9,7 @@ export const ideaService = {
   async extractFinalIdea(port, payload) {
     return request(port, "/api/extract-final-idea", {
       method: "POST",
+      headers: { Authorization: `Bearer ${payload.auth_token || ""}` },
       body: JSON.stringify(payload),
     });
   },

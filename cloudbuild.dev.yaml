@@ -1,0 +1,77 @@
+substitutions:
+  _IMAGE_ROOT: asia-northeast3-docker.pkg.dev/navigator-dev-xxrin-20261028/navigator-dev
+  _REGION: asia-northeast3
+  _AUTH_URL: https://navigator-auth-dev-7vyfy3kqma-du.a.run.app
+  _RELEASE_TAG: public-preview
+
+steps:
+  - id: build-webapp
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --platform=linux/amd64
+      - --build-arg
+      - VITE_SERVER_URL=/account
+      - -t
+      - ${_IMAGE_ROOT}/webapp:${_RELEASE_TAG}
+      - .
+  - id: check-webapp
+    name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - --rm
+      - --entrypoint=python
+      - ${_IMAGE_ROOT}/webapp:${_RELEASE_TAG}
+      - -c
+      - from main import app; from observability.logger import setup_session_logger
+  - id: build-auth
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --platform=linux/amd64
+      - -t
+      - ${_IMAGE_ROOT}/auth:${_RELEASE_TAG}
+      - ./server
+  - id: check-auth
+    name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - --rm
+      - --entrypoint=python
+      - ${_IMAGE_ROOT}/auth:${_RELEASE_TAG}
+      - -c
+      - from main import app
+  - id: push-webapp
+    name: gcr.io/cloud-builders/docker
+    args: [push, '${_IMAGE_ROOT}/webapp:${_RELEASE_TAG}']
+  - id: push-auth
+    name: gcr.io/cloud-builders/docker
+    args: [push, '${_IMAGE_ROOT}/auth:${_RELEASE_TAG}']
+  - id: deploy-auth
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - navigator-auth-dev
+      - --project=$PROJECT_ID
+      - --region=${_REGION}
+      - --image=${_IMAGE_ROOT}/auth:${_RELEASE_TAG}
+      - --quiet
+  - id: deploy-webapp
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - navigator-webapp-dev
+      - --project=$PROJECT_ID
+      - --region=${_REGION}
+      - --image=${_IMAGE_ROOT}/webapp:${_RELEASE_TAG}
+      - --update-env-vars=NAVIGATOR_AUTH_URL=${_AUTH_URL}
+      - --quiet
+
+options:
+  logging: CLOUD_LOGGING_ONLY

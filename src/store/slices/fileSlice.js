@@ -65,7 +65,7 @@ export const createFileSlice = (set, get) => ({
     const { backendPort } = get();
     if (!backendPort || !folderPath) return false;
     try {
-      const data = await fileService.scanFolder(backendPort, folderPath);
+      const data = await fileService.scanFolder(backendPort, folderPath, 3, get().authToken);
       if (data.status === "ok") {
         set({ fileTree: data.tree || get().fileTree, projectFolder: data.root || folderPath });
         return true;
@@ -87,7 +87,7 @@ export const createFileSlice = (set, get) => ({
     const { backendPort, projectFolder } = get();
     if (!backendPort || !node?.path) return;
 
-    const readFile = async () => fileService.readFile(backendPort, node.path);
+    const readFile = async () => fileService.readFile(backendPort, node.path, get().authToken);
 
     try {
       let data = await readFile();

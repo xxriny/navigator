@@ -35,10 +35,12 @@ def _snap_to_dict(snap: PublishedSnapshot, include_data: bool = False) -> dict:
 
 # ── 로컬 결과 목록 (publish 모달용) ──────────────────────────────
 
-def list_local_results(local_db: Session, shared_db: Session, limit: int = 50) -> list[dict]:
+def list_local_results(local_db: Session, shared_db: Session, limit: int = 50, team_id: str = "") -> list[dict]:
     """Publish 대상 선택용 로컬 AnalysisResult 목록."""
     results = (
         local_db.query(AnalysisResult)
+        .join(AnalysisSession, AnalysisSession.run_id == AnalysisResult.run_id)
+        .filter(AnalysisSession.team_id == team_id)
         .order_by(AnalysisResult.saved_at.desc())
         .limit(limit)
         .all()
@@ -85,9 +87,13 @@ def publish_snapshot(
     user_id: Optional[str] = None,
 ) -> dict:
     """로컬 AnalysisResult를 shared.db PublishedSnapshot으로 게시."""
-    result = local_db.query(AnalysisResult).filter(AnalysisResult.run_id == run_id).first()
+    if not team_id or not user_id:
+        raise ValueError("인증된 팀과 게시자가 필요합니다.")
+    result = local_db.query(AnalysisResult).join(
+        AnalysisSession, AnalysisSession.run_id == AnalysisResult.run_id
+    ).filter(AnalysisResult.run_id == run_id, AnalysisSession.team_id == team_id).first()
     if not result:
-        raise ValueError(f"로컬 결과를 찾을 수 없습니다: {run_id}")
+        raise ValueError(f"현재 팀의 로컬 결과를 찾을 수 없습니다: {run_id}")
 
     existing_count = (
         shared_db.query(PublishedSnapshot)

@@ -132,6 +132,10 @@ except ImportError:
         def bind(self, **kw):
             return self
 
-    def get_logger(run_id: str = ""):  # type: ignore[misc]
+    def get_logger(run_id: str = "", node_name: str = ""):  # type: ignore[misc]
         _ensure_configured()
         return _FallbackLogger(run_id=run_id)
+
+    def setup_session_logger(run_id: str):
+        # shortcut: optional rich 미설치 시 파일 로그 없이 콘솔 로그만 남긴다, 파일 로그가 필요해지면 공통 핸들러로 통합한다.
+        return None

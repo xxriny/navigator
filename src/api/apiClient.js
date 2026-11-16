@@ -39,10 +39,13 @@ export function wsUrl(path, port = DEFAULT_BACKEND_PORT) {
 
 export async function request(port, path, options = {}) {
   const url = apiUrl(path, port);
+  const { default: useAppStore } = await import("../store/useAppStore.js");
+  const token = useAppStore.getState().authToken;
   const response = await fetch(url, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });

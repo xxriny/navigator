@@ -6,6 +6,8 @@ RUN npm ci
 
 COPY index.html postcss.config.js tailwind.config.js vite.config.js ./
 COPY src ./src
+ARG VITE_SERVER_URL
+ENV VITE_SERVER_URL=${VITE_SERVER_URL}
 RUN npm run build
 
 
