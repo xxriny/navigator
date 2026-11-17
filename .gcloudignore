@@ -5,7 +5,9 @@
 **/*.db
 node_modules
 dist
-backend/storage
+backend/storage/*
+!backend/storage/__init__.py
+!backend/storage/publish_service.py
 backend/.venv
 backend/test
 backend/scratch
