@@ -59,7 +59,7 @@ export default function HomeScreen() {
     (m) => m && (m.role === "user" || m.role === "assistant")
   );
 
-  const isPm = currentUser?.role === "pm";
+  const canAnalyze = !!currentUser?.team_id;
   const isReverseMode = selectedMode === "reverse";
   const trimmedInput = (chatInput || "").trim();
   const isProcessing = pipelineStatus === "running";
@@ -133,8 +133,8 @@ export default function HomeScreen() {
     return () => document.removeEventListener("mousedown", handler);
   }, [exportMenuOpen]);
 
-  const canSendInitial = isPm && !!trimmedInput && (!isReverseMode || !!projectFolder);
-  const canSendFollowUp = isPm && !!trimmedInput && !isProcessing;
+  const canSendInitial = canAnalyze && !!trimmedInput && (!isReverseMode || !!projectFolder);
+  const canSendFollowUp = canAnalyze && !!trimmedInput && !isProcessing;
   const canSend = hasStarted ? canSendFollowUp : canSendInitial;
 
   const handleSend = () => {
@@ -299,10 +299,9 @@ export default function HomeScreen() {
 
           {/* 입력 카드 */}
           <div className="w-full max-w-5xl">
-            {/* PM 권한 가드 */}
-            {!isPm && (
+          {!canAnalyze && (
               <div className="mb-3 w-full text-center py-2 px-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[12px] font-medium">
-                LLM 분석은 PM 권한이 필요합니다. 팀 PM에게 권한을 요청하세요.
+                LLM 분석을 시작하려면 먼저 팀에 가입하세요.
               </div>
             )}
 
@@ -312,7 +311,7 @@ export default function HomeScreen() {
               isDarkMode
                 ? "bg-[#1c2128]/60 border-white/[0.05] shadow-[0_12px_40px_rgba(0,0,0,0.4)] backdrop-blur-md focus-within:border-white/[0.12]"
                 : "bg-white/85 border-slate-200 shadow-[0_12px_32px_rgba(0,0,0,0.06)] backdrop-blur-md focus-within:border-slate-300"
-            } ${!isPm ? "opacity-50 pointer-events-none" : ""}`}>
+            } ${!canAnalyze ? "opacity-50 pointer-events-none" : ""}`}>
 
               {/* 텍스트 영역 */}
               <div className="px-6 pt-6 pb-4">
@@ -395,9 +394,9 @@ export default function HomeScreen() {
       {hasStarted && (
         <div className="shrink-0 px-6 pb-8 pt-2 relative z-20">
           <div className="max-w-5xl mx-auto">
-            {!isPm && (
+            {!canAnalyze && (
               <div className="mb-3 w-full text-center py-2 px-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[12px] font-medium">
-                LLM 분석은 PM 권한이 필요합니다. 팀 PM에게 권한을 요청하세요.
+                LLM 분석을 시작하려면 먼저 팀에 가입하세요.
               </div>
             )}
 
@@ -421,7 +420,7 @@ export default function HomeScreen() {
               isDarkMode
                 ? "bg-[#1c2128]/60 border-white/[0.05] shadow-[0_12px_40px_rgba(0,0,0,0.4)] backdrop-blur-md focus-within:border-white/[0.12]"
                 : "bg-white/85 border-slate-200 shadow-[0_12px_32px_rgba(0,0,0,0.06)] backdrop-blur-md focus-within:border-slate-300"
-            } ${!isPm ? "opacity-50 pointer-events-none" : ""}`}>
+            } ${!canAnalyze ? "opacity-50 pointer-events-none" : ""}`}>
               {/* 텍스트 영역 */}
               <div className="px-6 pt-6 pb-4">
                 <textarea

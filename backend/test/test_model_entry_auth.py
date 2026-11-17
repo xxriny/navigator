@@ -114,7 +114,7 @@ def test_extract_uses_verified_header_token_instead_of_body_token():
 @pytest.mark.parametrize(("kind", "role", "expected"), [
     ("analyze", "pm", "result"),
     ("idea_chat", "software_engineer", "result"),
-    ("analyze", "software_engineer", "error"),
+    ("analyze", "software_engineer", "result"),
 ])
 def test_websocket_uses_db_user_role(kind, role, expected, monkeypatch):
     from auth.service import create_access_token

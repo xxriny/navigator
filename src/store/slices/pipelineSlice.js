@@ -281,12 +281,8 @@ export const createPipelineSlice = (set, get) => ({
 
   startAnalysis: (idea, context = "", apiKey = "", model = "gemini-3.1-flash-lite", selectedMode = "create", initialTitle = null) => {
     const { currentUser } = get();
-    if (!currentUser?.github_id) {
-      get().addNotification("GitHub 로그인이 필요합니다. 설정에서 연결하세요.", "error");
-      return;
-    }
-    if (currentUser.role !== "pm") {
-      get().addNotification("LLM 분석은 PM 권한이 필요합니다. PM에게 문의하세요.", "error");
+    if (!currentUser?.team_id) {
+      get().addNotification("팀에 가입한 사용자만 LLM 분석을 실행할 수 있습니다.", "error");
       return;
     }
     const normalizedMode = normalizeMode(selectedMode);
@@ -389,12 +385,8 @@ export const createPipelineSlice = (set, get) => ({
    */
   runSyncUpdate: (opts = {}) => {
     const { currentUser } = get();
-    if (!currentUser?.github_id) {
-      get().addNotification("GitHub 로그인이 필요합니다. 설정에서 연결하세요.", "error");
-      return;
-    }
-    if (currentUser.role !== "pm") {
-      get().addNotification("LLM 분석은 PM 권한이 필요합니다. PM에게 문의하세요.", "error");
+    if (!currentUser?.team_id) {
+      get().addNotification("팀에 가입한 사용자만 LLM 분석을 실행할 수 있습니다.", "error");
       return;
     }
     if (get().pipelineStatus === "running") {

@@ -95,9 +95,6 @@ async def websocket_pipeline(websocket: WebSocket):
                 if not user:
                     await _safe_send_error(websocket, "인증이 필요합니다.")
                     continue
-                if msg_type == "analyze" and user.role != "pm":
-                    await _safe_send_error(websocket, "LLM 분석은 PM 권한이 필요합니다.")
-                    continue
                 quota = check_model_call(payload["auth_token"])
                 if quota != "allowed":
                     await _safe_send_error(websocket, "이메일 가입 계정의 모델 호출 10회를 모두 사용했거나 한도를 확인할 수 없습니다.")

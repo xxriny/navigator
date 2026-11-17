@@ -17,7 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from auth.deps import get_current_user, get_current_user_optional, require_pm, _extract_token
+from auth.deps import get_current_user, get_current_user_optional, _extract_token
 from auth.database import get_db, get_shared_db
 from sqlalchemy.orm import Session
 from auth.models import User
@@ -294,7 +294,7 @@ def _compact_result_value(value, *, depth: int = 0):
 async def analyze(
     req: AnalysisRequest,
     shared_db: Session = Depends(get_shared_db),
-    current_user: User = Depends(require_pm),
+    current_user: User = Depends(get_current_user),
 ):
     _require_team(current_user, req.team_id or current_user.team_id)
     _ensure_pipeline()
