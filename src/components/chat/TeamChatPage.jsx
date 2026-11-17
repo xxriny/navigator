@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { ArrowUp, Hash, Loader2, MessagesSquare, Plus, X } from "lucide-react";
 import useAppStore from "../../store/useAppStore";
 import { serverRequest } from "../../api/serverClient";
+import { publishService } from "../../api/services/publishService";
+import { parseArtifactMarker } from "./artifactShare";
 
 const clock = (value) => {
   if (!value) return "";
@@ -11,6 +13,7 @@ const clock = (value) => {
 
 export default function TeamChatPage({ onClose }) {
   const authToken = useAppStore((s) => s.authToken);
+  const backendPort = useAppStore((s) => s.backendPort);
   const currentUser = useAppStore((s) => s.currentUser);
   const myTeams = useAppStore((s) => s.myTeams);
   const isDarkMode = useAppStore((s) => s.isDarkMode);
@@ -28,6 +31,8 @@ export default function TeamChatPage({ onClose }) {
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [artifact, setArtifact] = useState(null);
+  const [artifactLoadingId, setArtifactLoadingId] = useState("");
   const bottomRef = useRef(null);
   const roomKey = selected ? `${selected.type}:${selected.id}` : "";
   const headers = { Authorization: `Bearer ${authToken}` };
@@ -140,6 +145,22 @@ export default function TeamChatPage({ onClose }) {
     }
   };
 
+  const openArtifact = async (share) => {
+    setArtifactLoadingId(share.id);
+    setError("");
+    try {
+      const response = await publishService.getSnapshot(backendPort || 8000, share.id, authToken);
+      if (response.status !== "ok" || response.data?.data?.artifact_kind !== share.kind) {
+        throw new Error("공유 결과를 열 수 없습니다.");
+      }
+      setArtifact(response.data);
+    } catch (cause) {
+      setError(cause.message || "공유 결과를 열 수 없습니다.");
+    } finally {
+      setArtifactLoadingId("");
+    }
+  };
+
   const selectedChannel = channels.find((item) => selected?.type === "channel" && item.id === selected.id);
   const selectedMember = members.find((item) => selected?.type === "dm" && item.id === selected.id);
   const title = selectedChannel ? `# ${selectedChannel.name}` : selectedMember?.name || selectedMember?.email || "팀 채팅";
@@ -190,12 +211,19 @@ export default function TeamChatPage({ onClose }) {
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5 space-y-5">
           {loading && <div className={`flex items-center gap-2 text-xs ${muted}`}><Loader2 size={14} className="animate-spin" /> 대화를 불러오는 중</div>}
           {!loading && messages.length === 0 && <div className={`h-full flex flex-col items-center justify-center gap-2 ${muted}`}><MessagesSquare size={28} /><p className="text-sm">첫 메시지를 보내 대화를 시작하세요.</p></div>}
-          {messages.map((message) => (
+          {messages.map((message) => {
+            const share = parseArtifactMarker(message.content);
+            return (
             <article key={message.id} className="flex gap-3 items-start">
               <span className={`w-8 h-8 rounded-full shrink-0 grid place-items-center text-xs font-bold ${message.sender_id === currentUser?.id ? "bg-blue-600 text-white" : "bg-indigo-500/20 text-indigo-400"}`}>{(message.sender_name || "?").slice(0, 1)}</span>
-              <div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-xs">{message.sender_id === currentUser?.id ? "나" : message.sender_name}</strong><time className={`text-[10px] ${muted}`}>{clock(message.created_at)}</time></div><p className="text-sm mt-1 whitespace-pre-wrap break-words leading-relaxed">{message.content}</p></div>
+              <div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-xs">{message.sender_id === currentUser?.id ? "나" : message.sender_name}</strong><time className={`text-[10px] ${muted}`}>{clock(message.created_at)}</time></div>
+                {share ? <button type="button" onClick={() => openArtifact(share)} disabled={artifactLoadingId === share.id}
+                  className="mt-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3 text-left text-sm text-blue-300 hover:bg-blue-500/20 disabled:opacity-50">
+                  {share.kind === "components" ? "컴포넌트" : "API Spec"} 공유 · {artifactLoadingId === share.id ? "여는 중..." : "내용 보기"}
+                </button> : <p className="text-sm mt-1 whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>}
+              </div>
             </article>
-          ))}
+          );})}
           <div ref={bottomRef} />
         </div>
         {error && <p role="alert" className="text-xs text-red-400 px-5 pb-2">{error}</p>}
@@ -206,6 +234,30 @@ export default function TeamChatPage({ onClose }) {
           <button type="submit" disabled={!selected || !draft.trim() || sending} aria-label="메시지 보내기" className="w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white grid place-items-center"><ArrowUp size={16} /></button>
         </form>
       </section>
+      {artifact && <ArtifactPreview snapshot={artifact} onClose={() => setArtifact(null)} />}
     </div>
   );
+}
+
+function ArtifactPreview({ snapshot, onClose }) {
+  const kind = snapshot.data.artifact_kind;
+  const items = snapshot.data[kind] || [];
+  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label={snapshot.title}>
+    <div className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-slate-700 bg-slate-900 text-white shadow-xl">
+      <div className="flex items-center justify-between border-b border-slate-700 p-4">
+        <div><h2 className="font-semibold">{snapshot.title}</h2><p className="text-xs text-slate-400">공유 버전 {snapshot.version} · {items.length}개</p></div>
+        <button type="button" onClick={onClose} aria-label="공유 결과 닫기"><X size={18} /></button>
+      </div>
+      <div className="space-y-3 overflow-y-auto p-4">
+        {items.map((item, index) => <div key={index} className="rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+          <h3 className="font-medium">{kind === "components" ? item.component_name || item.name || `컴포넌트 ${index + 1}` : item.endpoint || item.path || `API ${index + 1}`}</h3>
+          <p className="mt-1 text-sm text-slate-300">{kind === "components" ? item.role : item.description}</p>
+          {kind === "components" ? <p className="mt-2 text-xs text-slate-400">{Array.isArray(item.dependencies) ? item.dependencies.join(", ") : ""}</p> : <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div><p className="text-xs text-slate-400">Request Schema</p><pre className="mt-1 overflow-x-auto text-xs">{JSON.stringify(item.request_schema || {}, null, 2)}</pre></div>
+            <div><p className="text-xs text-slate-400">Response Schema</p><pre className="mt-1 overflow-x-auto text-xs">{JSON.stringify(item.response_schema || {}, null, 2)}</pre></div>
+          </div>}
+        </div>)}
+      </div>
+    </div>
+  </div>;
 }

@@ -12,6 +12,8 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
+import json
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -22,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import DirectMessage, TeamChannel, TeamChannelMessage, TeamChannelRead, TeamMember, User
+from models import DirectMessage, PublishedSnapshot, TeamChannel, TeamChannelMessage, TeamChannelRead, TeamMember, User
 from routers.auth import get_current_user
 
 router = APIRouter(prefix="/messages", tags=["messages"])
@@ -46,6 +48,29 @@ def _content(value: str) -> str:
     if not content:
         raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
     return content
+
+
+_SHARE_MARKER = re.compile(r"\[\[navigator-share:(components|apis):([A-Za-z0-9-]{1,64})\]\]")
+
+
+def _validate_artifact_share(content: str, team_id: str, db: Session) -> None:
+    if not content.startswith("[[navigator-share:"):
+        return
+    match = _SHARE_MARKER.fullmatch(content)
+    if not match:
+        raise HTTPException(status_code=400, detail="공유 카드 형식이 올바르지 않습니다.")
+    kind, snapshot_id = match.groups()
+    snapshot = db.query(PublishedSnapshot).filter(
+        PublishedSnapshot.id == snapshot_id, PublishedSnapshot.team_id == team_id,
+    ).first()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="공유할 결과를 찾을 수 없습니다.")
+    try:
+        data = json.loads(snapshot.snapshot_data)
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or data.get("artifact_kind") != kind or not isinstance(data.get(kind), list):
+        raise HTTPException(status_code=404, detail="공유할 결과를 찾을 수 없습니다.")
 
 
 def _to_out(msg: DirectMessage) -> dict:
@@ -182,9 +207,11 @@ async def send_channel_message(
 ):
     team_id = _team_id(current_user, db)
     _channel_for_team(channel_id, team_id, db)
+    content = _content(req.content)
+    _validate_artifact_share(content, team_id, db)
     message = TeamChannelMessage(
         team_id=team_id, channel_id=channel_id, sender_id=current_user.id,
-        sender_name=current_user.name or current_user.email, content=_content(req.content),
+        sender_name=current_user.name or current_user.email, content=content,
     )
     db.add(message)
     db.commit()
@@ -233,6 +260,9 @@ async def send_message(
     if receiver.id == current_user.id:
         raise HTTPException(status_code=400, detail="본인에게 메시지를 보낼 수 없습니다.")
 
+    content = _content(req.content)
+    _validate_artifact_share(content, team_id, db)
+
     msg = DirectMessage(
         id=_new_uuid(),
         team_id=team_id,
@@ -240,7 +270,7 @@ async def send_message(
         sender_name=current_user.name or current_user.email,
         receiver_id=receiver.id,
         receiver_name=receiver.name or receiver.email,
-        content=_content(req.content),
+        content=content,
         context_question=req.context_question or "",
         context_domain=req.context_domain or "general",
         is_read=False,

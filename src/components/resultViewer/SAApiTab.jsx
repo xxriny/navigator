@@ -4,9 +4,10 @@ import { Globe, ArrowRight, Code, Terminal } from "lucide-react";
 import Card from "../ui/Card";
 import Badge from "../ui/Badge";
 import ReportLayout from "./layout/ReportLayout";
+import ShareArtifactButton from "./ShareArtifactButton";
 
 export default function SAApiTab() {
-  const { isDarkMode, sa_output, apis: storeApis } = useStore(['isDarkMode', 'sa_output', 'apis']);
+  const { isDarkMode, sa_output, apis: storeApis, resultData } = useStore(['isDarkMode', 'sa_output', 'apis', 'resultData']);
   const apis = storeApis?.length > 0 ? storeApis : (sa_output?.apis || sa_output?.data?.apis || []);
 
   if (apis.length === 0) return <div className="h-full flex items-center justify-center text-slate-500">API 데이터 없음</div>;
@@ -17,6 +18,7 @@ export default function SAApiTab() {
       title="Interface Specifications"
       subtitle="서비스 간 통신을 위한 RESTful API 엔드포인트와 데이터 규격 설계입니다."
       badge={`${apis.length} Endpoints`}
+      rightElement={<ShareArtifactButton kind="apis" runId={resultData?.run_id || resultData?.metadata?.run_id} />}
     >
       <div className="space-y-8">
         {apis.map((api, idx) => <ApiCard key={idx} api={api} isDarkMode={isDarkMode} />)}

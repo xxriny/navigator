@@ -13,7 +13,7 @@ import hmac
 import json
 import os
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File, HTTPException
 from fastapi.security import OAuth2PasswordBearer
@@ -2175,6 +2175,32 @@ class PublishRequest(BaseModel):
     title: str
     description: str = ""
     team_id: Optional[str] = None
+
+
+class ShareArtifactRequest(BaseModel):
+    run_id: str = Field(max_length=255)
+    kind: Literal["components", "apis"]
+
+
+@rest_router.post("/api/share-artifact")
+async def share_artifact_endpoint(
+    req: ShareArtifactRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    shared_db: Session = Depends(get_shared_db),
+):
+    _require_team(current_user, current_user.team_id)
+    from storage.publish_service import publish_snapshot
+
+    try:
+        snapshot = publish_snapshot(
+            db, shared_db, req.run_id,
+            "컴포넌트" if req.kind == "components" else "API Spec",
+            team_id=current_user.team_id, user_id=current_user.id, kind=req.kind,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"status": "ok", "data": snapshot}
 
 
 @rest_router.get("/api/local-results")

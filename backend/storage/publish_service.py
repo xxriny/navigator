@@ -85,6 +85,7 @@ def publish_snapshot(
     description: str = "",
     team_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    kind: Optional[str] = None,
 ) -> dict:
     """로컬 AnalysisResult를 shared.db PublishedSnapshot으로 게시."""
     if not team_id or not user_id:
@@ -94,6 +95,22 @@ def publish_snapshot(
     ).filter(AnalysisResult.run_id == run_id, AnalysisSession.team_id == team_id).first()
     if not result:
         raise ValueError(f"현재 팀의 로컬 결과를 찾을 수 없습니다: {run_id}")
+
+    snapshot_data = result.shaped_result
+    if kind is not None:
+        if kind not in {"components", "apis"}:
+            raise ValueError("공유할 수 없는 결과 항목입니다.")
+        shaped = json.loads(result.shaped_result)
+        if not isinstance(shaped, dict):
+            raise ValueError("공유할 결과 형식이 올바르지 않습니다.")
+        sa_output = shaped.get("sa_output")
+        sa_data = sa_output.get("data") if isinstance(sa_output, dict) else {}
+        if not isinstance(sa_data, dict):
+            sa_data = {}
+        items = shaped.get(kind) or sa_data.get(kind)
+        if not isinstance(items, list) or not items or not all(isinstance(item, dict) for item in items):
+            raise ValueError("공유할 결과가 없습니다.")
+        snapshot_data = json.dumps({"artifact_kind": kind, kind: items}, ensure_ascii=False)
 
     existing_count = (
         shared_db.query(PublishedSnapshot)
@@ -108,7 +125,7 @@ def publish_snapshot(
         title=title,
         description=description or "",
         version=existing_count + 1,
-        snapshot_data=result.shaped_result,
+        snapshot_data=snapshot_data,
     )
     shared_db.add(snap)
     shared_db.commit()
@@ -156,6 +173,12 @@ def pull_snapshot(shared_db: Session, local_db: Session, snapshot_id: str, run_i
     snap = shared_db.query(PublishedSnapshot).filter(PublishedSnapshot.id == snapshot_id).first()
     if not snap:
         raise ValueError(f"스냅샷을 찾을 수 없습니다: {snapshot_id}")
+    try:
+        shaped = json.loads(snap.snapshot_data) if snap.snapshot_data else {}
+    except (TypeError, ValueError):
+        shaped = {}
+    if isinstance(shaped, dict) and shaped.get("artifact_kind") in {"components", "apis"}:
+        raise ValueError("부분 공유 결과는 전체 분석에 Pull할 수 없습니다.")
 
     local = local_db.query(AnalysisResult).filter(AnalysisResult.run_id == run_id).first()
     if local:
@@ -166,10 +189,6 @@ def pull_snapshot(shared_db: Session, local_db: Session, snapshot_id: str, run_i
 
     local_db.commit()
 
-    try:
-        shaped = json.loads(snap.snapshot_data) if snap.snapshot_data else {}
-    except Exception:
-        shaped = {}
 
     return {
         "run_id": run_id,

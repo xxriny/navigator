@@ -184,14 +184,14 @@ function SnapshotDetail({ snapshot, onBack, onDelete, canDelete, onPull, isPulli
             v{snapshot.version} · {new Date(snapshot.published_at).toLocaleString("ko-KR")}
           </p>
         </div>
-        <button
+        {!data.artifact_kind && <button
           onClick={() => onPull(snapshot)}
           disabled={isPulling}
           className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-1.5 mr-2"
         >
           <Download size={13} />
           {isPulling ? "Pull 중..." : "Pull"}
-        </button>
+        </button>}
         {canDelete && (
           <button onClick={() => onDelete(snapshot.id)} className="p-2 text-red-400/60 hover:text-red-400 transition-colors rounded-lg hover:bg-red-500/10">
             <Trash2 size={16} />
