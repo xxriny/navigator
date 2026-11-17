@@ -221,6 +221,16 @@ export default function WorkspaceSwitcher({ onOpenGithub, onOpenPricing, onCreat
               }`}>{userPlan || "free"}</span>
             </button>
 
+            <button
+              onClick={() => toggleDarkMode()}
+              className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-xs font-semibold transition-colors ${
+                isDarkMode ? "text-slate-300 hover:bg-white/8" : "text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              {isDarkMode ? <Sun size={13} className="opacity-70" /> : <Moon size={13} className="opacity-70" />}
+              {isDarkMode ? "라이트 모드" : "다크 모드"}
+            </button>
+
             <div className={`my-1 border-t ${isDarkMode ? "border-white/5" : "border-slate-100"}`} />
             <button
               onClick={() => { setUserPopup(false); logout?.(); }}
