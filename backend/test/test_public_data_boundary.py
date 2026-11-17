@@ -47,6 +47,10 @@ def test_session_and_memos_stay_inside_current_team(tmp_path):
         assert client.get("/api/session/mine/restore").json()["data"] == {"value": "mine"}
         assert client.post("/api/memos", json={"session_id": "other", "text": "bad"}).status_code == 404
         assert client.post("/api/memos", json={"session_id": "mine", "text": "own"}).status_code == 200
+        browser_session_id = "1794876992826"
+        assert client.get(f"/api/memos?session_id={browser_session_id}").json() == {"status": "ok", "memos": []}
+        assert client.post("/api/memos", json={"session_id": browser_session_id, "text": "browser memo"}).status_code == 200
+        assert client.get(f"/api/memos?session_id={browser_session_id}").json()["memos"][0]["text"] == "browser memo"
         assert client.delete("/api/memos/foreign-memo").status_code == 200
         assert client.post("/api/memos/apply", json={"memo_ids": ["foreign-memo"]}).json()["updated"] == 0
         assert [m["text"] for m in client.get("/api/memos?session_id=mine").json()["memos"]] == ["own"]

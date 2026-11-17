@@ -100,6 +100,18 @@ def _require_owned_session(db: Session, user: User, run_id: str) -> None:
         raise HTTPException(status_code=404, detail="분석 세션을 찾을 수 없습니다.")
 
 
+def _ensure_memo_session(db: Session, user: User, session_id: str) -> bool:
+    """Register browser-created timestamp sessions for team-scoped memo storage."""
+    from auth.models import AnalysisSession
+    session = db.query(AnalysisSession).filter(AnalysisSession.run_id == session_id).first()
+    if session:
+        _require_owned_session(db, user, session_id)
+        return True
+    if not user.team_id or not re.fullmatch(r"\d{10,16}", session_id or ""):
+        raise HTTPException(status_code=404, detail="분석 세션을 찾을 수 없습니다.")
+    return False
+
+
 def _team_project_path_allowed(user: User, path: str) -> bool:
     try:
         roots = json.loads(os.environ.get("NAVIGATOR_TEAM_PROJECT_ROOTS", "{}"))
@@ -467,7 +479,8 @@ async def get_memos_endpoint(session_id: Optional[str] = None, current_user: Use
     from auth.models import MemoItem
     if not session_id:
         return {"status": "ok", "memos": []}
-    _require_owned_session(db, current_user, session_id)
+    if not _ensure_memo_session(db, current_user, session_id):
+        return {"status": "ok", "memos": []}
     try:
         q = db.query(MemoItem).filter(MemoItem.session_id == session_id, MemoItem.team_id == current_user.team_id)
         items = q.order_by(MemoItem.created_at.asc()).all()
@@ -494,8 +507,9 @@ async def get_memos_endpoint(session_id: Optional[str] = None, current_user: Use
 
 @rest_router.post("/api/memos")
 async def add_memo_endpoint(req: MemoRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from auth.models import MemoItem
-    _require_owned_session(db, current_user, req.session_id)
+    from auth.models import AnalysisSession, MemoItem
+    if not _ensure_memo_session(db, current_user, req.session_id):
+        db.add(AnalysisSession(run_id=req.session_id, team_id=current_user.team_id, created_by=current_user.id))
     try:
         memo = MemoItem(
             session_id=req.session_id,
