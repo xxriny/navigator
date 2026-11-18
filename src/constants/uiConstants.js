@@ -1,6 +1,6 @@
 import {
   Table2, Layers, Globe, Database,
-  ShieldCheck, FolderTree, GitBranch, Github, ClipboardList, Share2, GitPullRequest,
+  ShieldCheck, FolderTree, GitBranch, Github, ClipboardList, Share2, GitPullRequest, MessagesSquare,
 } from "lucide-react";
 
 export const ICON_PANELS = [
@@ -12,6 +12,7 @@ export const ICON_PANELS = [
   { id: "sa_test_strategy", label: "Test Strategy", Icon: ShieldCheck, group: "sa", color: "text-emerald-400", bg: "bg-emerald-500/10" },
   { id: "project_structure", label: "Proj Structure", Icon: FolderTree, group: "sa", color: "text-violet-400", bg: "bg-violet-500/10" },
   { id: "agile_impact", label: "Impact Analysis", Icon: GitBranch, group: "collab", color: "text-blue-400", bg: "bg-blue-500/10" },
+  { id: "team_chat", label: "팀 채팅", Icon: MessagesSquare, group: "collab", color: "text-blue-400", bg: "bg-blue-500/10" },
   { id: "github_dashboard", label: "GitHub", Icon: Github, group: "collab", color: "text-slate-400", bg: "bg-slate-500/10" },
   { id: "task_approval", label: "Tasks", Icon: ClipboardList, group: "collab", color: "text-amber-400", bg: "bg-amber-500/10" },
   // author: xxrin

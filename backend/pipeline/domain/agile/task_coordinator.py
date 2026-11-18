@@ -1,7 +1,7 @@
 """
 Main Agent 태스크 조정기.
 PM 승인이 필요한 작업을 큐에 적재하고 상태를 관리한다.
-SQLite(auth DB)의 agile_tasks 테이블을 사용한다.
+auth DB의 agile_tasks 테이블을 사용한다.
 """
 from __future__ import annotations
 
@@ -12,19 +12,12 @@ def _now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 from typing import Optional
 
-from sqlalchemy import Column, String, Text, DateTime, create_engine, text
+from sqlalchemy import Column, String, Text, DateTime, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
-import os
+from auth.database import engine
 from observability.logger import get_logger
 
-_STORAGE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "storage",
-)
-_DB_PATH = os.path.join(_STORAGE_DIR, "local.db")
-_DB_URL = f"sqlite:///{_DB_PATH}"
-
-_engine = create_engine(_DB_URL, connect_args={"check_same_thread": False})
+_engine = engine
 _Session = sessionmaker(bind=_engine)
 
 
@@ -58,7 +51,8 @@ class AgileTask(_Base):
 
 def init_tasks_db():
     _Base.metadata.create_all(bind=_engine)
-    with _engine.connect() as conn:
+    existing = {column["name"] for column in inspect(_engine).get_columns("agile_tasks")}
+    with _engine.begin() as conn:
         for col_def in [
             "area TEXT DEFAULT ''",
             "assignee TEXT DEFAULT ''",
@@ -69,13 +63,8 @@ def init_tasks_db():
             "pr_number TEXT DEFAULT ''",
             "analysis_id TEXT DEFAULT ''",
         ]:
-            try:
-                # author: xxrin
-                # 기존 local.db의 agile_tasks에도 Dev GAP 연결 컬럼을 점진적으로 추가한다.
+            if col_def.split()[0] not in existing:
                 conn.execute(text(f"ALTER TABLE agile_tasks ADD COLUMN {col_def}"))
-                conn.commit()
-            except Exception:
-                pass
 
 
 # ── CRUD ────────────────────────────────────────────────────
@@ -105,18 +94,10 @@ def create_task(
     init_tasks_db()
     with _Session() as session:
         q = session.query(AgileTask).filter(AgileTask.team_id == team_id)
-        if feature_ref:
-            dup = q.filter(AgileTask.feature_ref == feature_ref).first()
-        else:
+        dup = q.filter(AgileTask.feature_ref == feature_ref).first() if feature_ref else None
+        if dup is None:
             title_norm = _norm(title)
-            dup = q.filter(AgileTask.title == title).first()
-            if dup is None:
-                # 정규화 제목으로도 체크 (SQLite에서 LOWER 사용)
-                from sqlalchemy import func
-                dup = session.query(AgileTask).filter(
-                    AgileTask.team_id == team_id,
-                    func.lower(AgileTask.title) == title.lower(),
-                ).first()
+            dup = next((task for task in q.all() if _norm(task.title) == title_norm), None)
 
         if dup is not None:
             get_logger().info(f"[create_task] 중복 차단 (feature_ref={feature_ref!r}, title={title!r})")
@@ -172,6 +153,37 @@ def delete_task(task_id: str) -> bool:
         session.delete(task)
         session.commit()
         return True
+
+
+def apply_task_update_proposal(team_id: str, proposal: dict, reviewed_by: str) -> dict | None:
+    """Apply only the exact reviewed diff to the current unassigned task version."""
+    changes = proposal.get("changes")
+    before = proposal.get("before")
+    allowed = {"title", "description", "area", "effort", "task_type"}
+    if not team_id or not isinstance(changes, dict) or not changes or not set(changes) <= allowed:
+        return None
+    if not isinstance(before, dict) or set(before) != set(changes):
+        return None
+    try:
+        version = datetime.fromisoformat(proposal["expected_updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    init_tasks_db()
+    with _Session() as session:
+        query = session.query(AgileTask).filter(
+            AgileTask.id == proposal.get("task_id"),
+            AgileTask.team_id == team_id,
+            AgileTask.status == "unassigned",
+            AgileTask.updated_at == version,
+        )
+        task = query.first()
+        if not task or any(getattr(task, field) != value for field, value in before.items()):
+            return None
+        if not query.update({**changes, "reviewed_by": reviewed_by, "updated_at": _now()}, synchronize_session=False):
+            return None
+        session.commit()
+        session.refresh(task)
+        return _task_to_dict(task)
 
 
 def update_task_status(
@@ -236,19 +248,62 @@ def get_existing_feature_refs(team_id: str) -> set[str]:
         return {r[0] for r in rows}
 
 
-def assign_task(task_id: str, assignee: str, reviewed_by: str = "") -> dict | None:
-    """unassigned 태스크에 담당자를 지정하고 pending_approval로 전환."""
+def assign_task(
+    task_id: str,
+    assignee: str,
+    reviewed_by: str = "",
+    *,
+    team_id: str = "",
+    assignee_id: str = "",
+) -> dict | None:
+    """현재 팀의 미할당 태스크만 실제 팀원에게 배분한다."""
+    from auth.database import SharedSessionLocal
+    from auth.shared_models import TeamMember, User
+
+    if not team_id or not assignee_id:
+        return None
     init_tasks_db()
     with _Session() as session:
-        task = session.query(AgileTask).filter(AgileTask.id == task_id).first()
+        query = session.query(AgileTask).filter(
+            AgileTask.id == task_id,
+            AgileTask.team_id == team_id,
+            AgileTask.status == "unassigned",
+        )
+        task = query.first()
         if not task:
             return None
-        task.assignee = assignee
-        task.status = "pending_approval"
-        task.updated_at = _now()
+
+        with SharedSessionLocal() as shared:
+            member = shared.query(TeamMember.role, User.name).join(
+                User, User.id == TeamMember.user_id,
+            ).filter(
+                TeamMember.team_id == team_id,
+                TeamMember.user_id == assignee_id,
+            ).first()
+        allowed_areas = {
+            "software_engineer": {"backend", "frontend", "fullstack", "devops", "sa"},
+            "engineer": {"backend", "frontend", "fullstack", "devops", "sa"},
+            "backend": {"backend", "fullstack"},
+            "frontend": {"frontend", "fullstack"},
+            "devops": {"devops"},
+        }
+        if not member or member.name != assignee or not (
+            member.role in allowed_areas
+            and (not task.area or task.area in allowed_areas[member.role])
+        ):
+            return None
+
+        values = {
+            "assignee": assignee,
+            "status": "pending_approval",
+            "updated_at": _now(),
+        }
         if reviewed_by:
-            task.reviewed_by = reviewed_by
+            values["reviewed_by"] = reviewed_by
+        if not query.update(values, synchronize_session=False):
+            return None
         session.commit()
+        session.refresh(task)
         return _task_to_dict(task)
 
 

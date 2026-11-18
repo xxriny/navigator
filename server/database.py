@@ -40,7 +40,10 @@ def get_db():
 
 def init_db() -> None:
     """앱 시작 시 테이블 생성 + 마이그레이션."""
-    from models import User, Team, Subscription, PublishedSnapshot, GeminiApiKey, DirectMessage  # noqa: F401
+    from models import (  # noqa: F401
+        User, Team, Subscription, PublishedSnapshot, GeminiApiKey, DirectMessage,
+        TeamChannel, TeamChannelMessage, TeamChannelRead,
+    )
 
     Base.metadata.create_all(bind=engine)
     _run_migrations()
@@ -55,6 +58,14 @@ def _run_migrations() -> None:
         _add_col(conn, "users",         "github_login",        "TEXT")
         _add_col(conn, "users",         "github_oauth_token",  "TEXT")
         _add_col(conn, "users",         "github_username",     "TEXT")
+        _add_col(conn, "users",         "signup_method",       "TEXT")
+        # shortcut: legacy email accounts already linked to GitHub are indistinguishable; audit those rows if needed.
+        conn.execute(text("""
+            UPDATE users SET signup_method = CASE
+                WHEN github_id IS NOT NULL OR password_hash = '' THEN 'github'
+                ELSE 'email'
+            END WHERE signup_method IS NULL
+        """))
         _add_col(conn, "teams",         "github_client_id",    "TEXT")
         _add_col(conn, "teams",         "github_client_secret","TEXT")
         _add_col(conn, "teams",         "github_repo",         "TEXT")

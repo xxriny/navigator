@@ -10,6 +10,8 @@ import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from auth.database import SessionLocal
+from auth.service import decode_token, get_user_by_id
 from transport.connection_manager import manager
 from observability.logger import get_logger
 
@@ -37,6 +39,26 @@ async def _safe_send_error(websocket: WebSocket, message: str) -> None:
         })
     except Exception as send_err:  # noqa: BLE001 - 마지막 보호선
         get_logger().warning(f"[WS] failed to send error frame: {send_err}")
+
+
+def _authenticated_user(payload: dict):
+    if not isinstance(payload, dict):
+        return None
+    raw_token = payload.get("auth_token")
+    if not isinstance(raw_token, str) or not raw_token:
+        return None
+    token = decode_token(raw_token)
+    if not token:
+        return None
+    db = SessionLocal()
+    try:
+        user = get_user_by_id(db, token.get("sub", ""))
+        return user if user and user.team_id else None
+    except Exception:
+        get_logger().exception("WebSocket user lookup failed")
+        return None
+    finally:
+        db.close()
 
 
 async def websocket_pipeline(websocket: WebSocket):
@@ -67,6 +89,11 @@ async def websocket_pipeline(websocket: WebSocket):
             msg_type = msg.get("type", "")
             payload = msg.get("payload", {})
 
+            if msg_type in {"analyze", "idea_chat"}:
+                user = _authenticated_user(payload)
+                if not user:
+                    await _safe_send_error(websocket, "인증이 필요합니다.")
+                    continue
             if msg_type == "analyze":
                 try:
                     _ensure_ws_pipeline()

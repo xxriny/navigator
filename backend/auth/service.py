@@ -6,7 +6,6 @@ GitHub 연동에는 githubkit과 httpx를 혼합 사용합니다.
 from __future__ import annotations
 
 import os
-import uuid
 import urllib.parse
 import httpx
 from datetime import datetime, timedelta
@@ -75,6 +74,7 @@ def create_user(
     role: str = "software_engineer",
     github_username: Optional[str] = None,
     team_name: Optional[str] = None,
+    public_signup: bool = False,
 ) -> User:
     #author: xxrin
     # shared DB role 제약과 호환되도록 구버전 role 값(engineer)을 표준값으로 정규화한다.
@@ -84,17 +84,21 @@ def create_user(
     team: Optional[Team] = None
     if team_name:
         team = db.query(Team).filter(Team.name == team_name).first()
+        if public_signup and team:
+            raise ValueError("기존 팀은 초대 코드로만 합류할 수 있습니다.")
         if not team:
             team = Team(name=team_name)
             db.add(team)
             db.flush()
-            # 새 팀에 무료 플랜 자동 생성
             db.add(Subscription(team_id=team.id, plan="free", status="active"))
 
+    if public_signup:
+        role = "pm" if team else "software_engineer"
     user = User(
         name=name,
         email=email,
         password_hash=hash_password(password),
+        signup_method="email",
         role=role,
         github_username=github_username,
         team_id=team.id if team else None,
@@ -259,7 +263,8 @@ def create_or_update_github_user(
         user = User(
             name=name,
             email=email,
-            password_hash=hash_password(str(uuid.uuid4())),
+            password_hash="",
+            signup_method="github",
             #author: xxrin
             # GitHub OAuth 신규 유저 생성 시 role CHECK 제약 오류를 피하기 위해 허용된 role만 저장한다.
             role="software_engineer",

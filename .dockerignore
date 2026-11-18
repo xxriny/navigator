@@ -1,4 +1,5 @@
 .git
+.codex
 .github
 .pytest_cache
 node_modules

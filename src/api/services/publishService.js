@@ -2,8 +2,10 @@ import { request } from "../apiClient";
 
 export const publishService = {
   /** 로컬 분석 결과 목록 (Publish 전 선택용) */
-  async listLocalResults(port, limit = 50) {
-    return request(port, `/api/local-results?limit=${limit}`);
+  async listLocalResults(port, limit = 50, authToken = "") {
+    return request(port, `/api/local-results?limit=${limit}`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
   },
 
   /** 로컬 결과를 공유 DB에 Publish */

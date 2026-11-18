@@ -4,9 +4,10 @@ import { Box, GitBranch, Cpu, Layout, Layers } from "lucide-react";
 import Card from "../ui/Card";
 import Badge from "../ui/Badge";
 import ReportLayout, { ReportSection } from "./layout/ReportLayout";
+import ShareArtifactButton from "./ShareArtifactButton";
 
 export default function SAComponentsTab() {
-  const { isDarkMode, sa_output, components: storeComponents } = useStore(['isDarkMode', 'sa_output', 'components']);
+  const { isDarkMode, sa_output, components: storeComponents, resultData } = useStore(['isDarkMode', 'sa_output', 'components', 'resultData']);
   const components = storeComponents?.length > 0
     ? storeComponents
     : (sa_output?.components || sa_output?.data?.components || []);
@@ -22,6 +23,7 @@ export default function SAComponentsTab() {
       title="System Components"
       subtitle="아키텍처를 구성하는 각 서비스 유닛과 UI 모듈의 역할 및 의존성 설계입니다."
       badge={`${components.length} Units`}
+      rightElement={<ShareArtifactButton kind="components" runId={resultData?.run_id || resultData?.metadata?.run_id} />}
     >
       {frontend.length > 0 && (
         <ReportSection title="Frontend Modules" icon={<Layout size={20} className="text-fuchsia-500" />} badge={frontend.length}>

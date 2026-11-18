@@ -8,7 +8,7 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 def _fake_user(role="pm", user_id="user-1"):
-    return types.SimpleNamespace(id=user_id, role=role)
+    return types.SimpleNamespace(id=user_id, role=role, team_id="team-1")
 
 def _valid_payload(source_dir="E:/navigator_v2/KNU-PROJECT"):
     return {

@@ -1,0 +1,16 @@
+.git
+.codex
+.env
+**/.env
+**/*.db
+node_modules
+dist
+backend/storage/*
+!backend/storage/__init__.py
+!backend/storage/publish_service.py
+backend/.venv
+backend/test
+backend/scratch
+backend/**/__pycache__
+server/venv
+server/shared.db

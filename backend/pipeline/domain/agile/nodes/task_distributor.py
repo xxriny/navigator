@@ -17,26 +17,10 @@ import json
 
 from pipeline.core.utils import call_structured
 from pipeline.domain.agile.schemas import TaskDistributorOutput
-from pipeline.domain.agile.task_coordinator import assign_task, list_tasks, _Session, AgileTask
+from pipeline.domain.agile.task_coordinator import assign_task, list_tasks
 from observability.logger import get_logger
 
 logger = get_logger()
-
-ROLE_AREA_COMPAT: dict[str, set[str]] = {
-    "software_engineer": {"backend", "frontend", "fullstack", "devops", "sa"},
-    "engineer":          {"backend", "frontend", "fullstack", "devops", "sa"},
-    "backend":           {"backend", "fullstack"},
-    "frontend":          {"frontend", "fullstack"},
-    "devops":            {"devops"},
-}
-
-
-def _is_compatible(member_role: str, task_area: str) -> bool:
-    allowed = ROLE_AREA_COMPAT.get(member_role)
-    if allowed is None:
-        return False
-    return not task_area or task_area in allowed
-
 
 SYSTEM_PROMPT = """# Role: Agile Workload Balancing Specialist
 
@@ -73,16 +57,18 @@ Assign unassigned development tasks to team members based on:
 def _get_team_members(team_id: str) -> list[dict]:
     """팀 멤버 목록 조회 (pm 제외)."""
     from auth.database import SharedSessionLocal
-    from auth.shared_models import User
+    from auth.shared_models import TeamMember, User
     db = SharedSessionLocal()
     try:
-        users = db.query(User).filter(
-            User.team_id == team_id,
-            User.role != "pm",
+        members = db.query(TeamMember, User).join(
+            User, User.id == TeamMember.user_id,
+        ).filter(
+            TeamMember.team_id == team_id,
+            TeamMember.role != "pm",
         ).all()
         return [
-            {"id": u.id, "name": u.name, "role": u.role}
-            for u in users
+            {"id": user.id, "name": user.name, "role": membership.role}
+            for membership, user in members
         ]
     finally:
         db.close()
@@ -142,12 +128,10 @@ def run_task_distributor(
 ) -> dict:
     """
     unassigned 태스크 → 팀 멤버에게 배분 → pending_approval 상태로 전환.
-    members: 프론트엔드에서 전달한 팀원 목록 (Cloud Run DB 기준). 없으면 로컬 shared.db 조회.
+    members: 이전 REST 호출 계약을 위한 인자. 실제 팀원은 DB에서 조회한다.
     """
-    if members:
-        members = [m for m in members if m.get("role") != "pm"]
-    else:
-        members = _get_team_members(team_id)
+    # Client-provided members are display data, not assignment authority.
+    members = _get_team_members(team_id)
     if not members:
         logger.warning("[task_distributor] 배분 가능한 팀 멤버 없음 (pm 외 멤버 없음)")
         return {"assigned": 0, "message": "배분 가능한 팀 멤버가 없습니다."}
@@ -175,27 +159,23 @@ def run_task_distributor(
         return {"assigned": 0, "message": "LLM 배분 실패"}
 
     output = res.parsed
-    name_to_id   = {m["name"]: m["id"] for m in members}
-    name_to_role = {m["name"]: m["role"] for m in members}
-    task_area    = {t["id"]: t.get("area", "") for t in unassigned}
+    member_by_name = {}
+    for member in members:
+        name = member["name"]
+        member_by_name[name] = None if name in member_by_name else member
     assigned_count = 0
 
     for assignment in output.assignments:
-        member_name  = assignment.assignee_name
-        member_role  = name_to_role.get(member_name, "")
-        area         = task_area.get(assignment.task_id, "")
-
-        if not _is_compatible(member_role, area):
-            logger.warning(
-                f"[task_distributor] 역할-영역 불일치 스킵: "
-                f"{member_name}({member_role}) ← {assignment.task_id}(area={area})"
-            )
+        member = member_by_name.get(assignment.assignee_name)
+        if not member:
             continue
 
         result = assign_task(
             task_id=assignment.task_id,
-            assignee=member_name,
+            assignee=member["name"],
             reviewed_by=distributed_by,
+            team_id=team_id,
+            assignee_id=member["id"],
         )
         if result:
             assigned_count += 1

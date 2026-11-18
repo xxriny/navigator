@@ -2,17 +2,19 @@ import { request } from "../apiClient";
 
 export const fileService = {
   /** 폴더 스캔 */
-  async scanFolder(port, path, maxDepth = 3) {
+  async scanFolder(port, path, maxDepth = 3, authToken = "") {
     return request(port, "/api/scan-folder", {
       method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
       body: JSON.stringify({ path, max_depth: maxDepth }),
     });
   },
 
   /** 파일 읽기 */
-  async readFile(port, path) {
+  async readFile(port, path, authToken = "") {
     return request(port, "/api/read-file", {
       method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
       body: JSON.stringify({ path }),
     });
   },

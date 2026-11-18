@@ -11,10 +11,10 @@ export const createPublishSlice = (set, get) => ({
 
   // ── 로컬 결과 목록 로드 ───────────────────────────────────
   loadLocalResults: async () => {
-    const { backendPort } = get();
+    const { backendPort, authToken } = get();
     if (!backendPort) return;
     try {
-      const res = await publishService.listLocalResults(backendPort);
+      const res = await publishService.listLocalResults(backendPort, 50, authToken);
       if (res.status === "ok") set({ localResults: res.data });
     } catch (e) {
       console.error("[publishSlice] loadLocalResults failed", e);

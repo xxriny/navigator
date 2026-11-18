@@ -34,6 +34,14 @@ def _mask(key: str) -> str:
     return key[:8] + "*" * max(0, len(key) - 8) if len(key) > 8 else "****"
 
 
+def _require_team_pm(user: User, team_id: Optional[str]) -> None:
+    if user.role != "pm" or not team_id or team_id != user.team_id:
+        raise HTTPException(status_code=403, detail="현재 팀 PM 권한이 필요합니다.")
+
+
+PROXY_KEY_MAX_USES = 10000
+
+
 def get_active_key(db: Session, team_id: Optional[str] = None) -> Optional[str]:
     """
     팀 키 → 전역 서버 키 → 환경변수 순서로 활성 Gemini 키 반환.
@@ -91,8 +99,7 @@ async def register_key(
     db: Session = Depends(get_db),
 ):
     """Gemini API 키 등록. 전역 키(team_id=None)는 PM 전용."""
-    if req.team_id is None and user.role != "pm":
-        raise HTTPException(status_code=403, detail="전역 서버 키 등록은 PM만 가능합니다.")
+    _require_team_pm(user, req.team_id)
 
     row = GeminiApiKey(
         team_id=req.team_id,
@@ -119,10 +126,8 @@ async def list_keys(
     db: Session = Depends(get_db),
 ):
     """등록된 키 목록 (API 키는 마스킹)."""
-    q = db.query(GeminiApiKey)
-    if team_id:
-        q = q.filter(GeminiApiKey.team_id == team_id)
-    rows = q.all()
+    _require_team_pm(user, team_id or user.team_id)
+    rows = db.query(GeminiApiKey).filter(GeminiApiKey.team_id == user.team_id).all()
     return {"keys": [
         {
             "id": r.id,
@@ -147,6 +152,7 @@ async def toggle_key(
     row = db.query(GeminiApiKey).filter(GeminiApiKey.id == key_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="키를 찾을 수 없습니다.")
+    _require_team_pm(user, row.team_id)
     row.is_active = active
     db.commit()
     return {"status": "ok", "is_active": active}
@@ -161,6 +167,7 @@ async def delete_key(
     row = db.query(GeminiApiKey).filter(GeminiApiKey.id == key_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="키를 찾을 수 없습니다.")
+    _require_team_pm(user, row.team_id)
     db.delete(row)
     db.commit()
     return {"status": "ok"}
@@ -172,16 +179,20 @@ async def get_active_key_endpoint(
     db: Session = Depends(get_db),
 ):
     """로컬 백엔드가 JWT로 팀의 활성 Gemini 키를 가져오는 엔드포인트."""
-    key = get_active_key(db, user.team_id)
-    if not key:
-        raise HTTPException(status_code=503, detail="사용 가능한 Gemini API 키가 없습니다.")
-    return {"api_key": key}
+    _require_team_pm(user, user.team_id)
+    row = db.query(GeminiApiKey).filter(
+        GeminiApiKey.team_id == user.team_id, GeminiApiKey.is_active == True
+    ).first()
+    if not row:
+        raise HTTPException(status_code=503, detail="현재 팀의 활성 Gemini 키가 없습니다.")
+    return {"api_key": row.api_key}
 
 
 @router.post("/proxy")
 async def proxy_gemini(
     request: dict,
     team_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -194,9 +205,25 @@ async def proxy_gemini(
     """
     import httpx
 
-    api_key = get_active_key(db, team_id)
-    if not api_key:
-        raise HTTPException(status_code=503, detail="사용 가능한 Gemini API 키가 없습니다.")
+    if not user.team_id or (team_id and team_id != user.team_id):
+        raise HTTPException(status_code=403, detail="현재 팀 키만 사용할 수 있습니다.")
+    row = db.query(GeminiApiKey).filter(
+        GeminiApiKey.team_id == user.team_id, GeminiApiKey.is_active == True
+    ).order_by(GeminiApiKey.usage_count.asc()).first()
+    if not row:
+        raise HTTPException(status_code=503, detail="현재 팀의 활성 키가 없습니다.")
+    claimed = db.query(GeminiApiKey).filter(
+        GeminiApiKey.id == row.id,
+        GeminiApiKey.is_active == True,
+        GeminiApiKey.usage_count < PROXY_KEY_MAX_USES,
+    ).update({
+        GeminiApiKey.usage_count: GeminiApiKey.usage_count + 1,
+        GeminiApiKey.last_used_at: datetime.utcnow(),
+    }, synchronize_session=False)
+    if not claimed:
+        raise HTTPException(status_code=429, detail="Gemini 키 사용 한도를 초과했습니다.")
+    db.commit()
+    api_key = row.api_key
 
     model = request.get("model", "gemini-2.0-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"

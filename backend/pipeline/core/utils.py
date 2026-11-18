@@ -107,6 +107,10 @@ def get_effective_key(api_key: str) -> str:
     2. 서버(8001) /keys/active 에서 가져온 키
     3. 백엔드 .env의 GEMINI_API_KEY 환경변수
     """
+    if os.environ.get("USE_VERTEX_AI", "false").lower() == "true":
+        if not os.environ.get("GCP_PROJECT_ID") or not os.environ.get("GCP_LOCATION"):
+            raise ValueError("Vertex AI project와 location이 설정되지 않았습니다.")
+        return "[vertex]"
     key = (api_key or "").strip()
     if key in ("", "[.env]", "[env]"):
         key = _fetch_key_from_server()

@@ -7,17 +7,17 @@ main.py에서 app.include_router(rest_router) 호출.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import hmac
 import json
 import os
 import re
-from typing import Optional
+from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Request, UploadFile, File
+from fastapi import APIRouter, Depends, Request, UploadFile, File, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from auth.deps import get_current_user, get_current_user_optional
+from auth.deps import get_current_user, get_current_user_optional, _extract_token
 from auth.database import get_db, get_shared_db
 from sqlalchemy.orm import Session
 from auth.models import User
@@ -84,6 +84,44 @@ def register_project_root(root_path: str):
 def is_allowed_project_file(path: str) -> bool:
     normalized = _normalize_path(path)
     return any(_is_within_root(normalized, root) for root in _allowed_project_roots)
+
+
+def _require_team(user: User, team_id: str) -> None:
+    if not user.team_id or not team_id or user.team_id != team_id:
+        raise HTTPException(status_code=403, detail="현재 팀의 데이터만 사용할 수 있습니다.")
+
+
+def _require_owned_session(db: Session, user: User, run_id: str) -> None:
+    from auth.models import AnalysisSession
+    if not user.team_id or not db.query(AnalysisSession).filter(
+        AnalysisSession.run_id == run_id,
+        AnalysisSession.team_id == user.team_id,
+    ).first():
+        raise HTTPException(status_code=404, detail="분석 세션을 찾을 수 없습니다.")
+
+
+def _ensure_memo_session(db: Session, user: User, session_id: str) -> bool:
+    """Register browser-created timestamp sessions for team-scoped memo storage."""
+    from auth.models import AnalysisSession
+    session = db.query(AnalysisSession).filter(AnalysisSession.run_id == session_id).first()
+    if session:
+        _require_owned_session(db, user, session_id)
+        return True
+    if not user.team_id or not re.fullmatch(r"\d{10,16}", session_id or ""):
+        raise HTTPException(status_code=404, detail="분석 세션을 찾을 수 없습니다.")
+    return False
+
+
+def _team_project_path_allowed(user: User, path: str) -> bool:
+    try:
+        roots = json.loads(os.environ.get("NAVIGATOR_TEAM_PROJECT_ROOTS", "{}"))
+        team_roots = roots.get(user.team_id, []) if isinstance(roots, dict) else []
+        return isinstance(team_roots, list) and any(
+            isinstance(root, str) and _is_within_root(_normalize_path(path), _normalize_path(root))
+            for root in team_roots
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 # ── Pydantic 모델 ─────────────────────────────────────────
@@ -174,12 +212,14 @@ async def get_config():
 
 
 @rest_router.post("/api/scan-folder")
-async def scan_folder_endpoint(req: ScanRequest):
+async def scan_folder_endpoint(req: ScanRequest, current_user: User = Depends(get_current_user)):
     from connectors.folder_connector import scan_folder
     if not req.path:
         return {"status": "error", "error": "폴더 경로가 비어있습니다."}
 
     normalized_root = _normalize_path(req.path)
+    if not _team_project_path_allowed(current_user, normalized_root):
+        raise HTTPException(status_code=403, detail="팀에 허용된 프로젝트 경로가 아닙니다.")
     if not os.path.isdir(normalized_root):
         return {"status": "error", "error": f"유효하지 않은 폴더: {req.path}"}
 
@@ -192,11 +232,13 @@ async def scan_folder_endpoint(req: ScanRequest):
 
 
 @rest_router.post("/api/read-file")
-async def read_file_endpoint(req: ReadFileRequest):
+async def read_file_endpoint(req: ReadFileRequest, current_user: User = Depends(get_current_user)):
     if not req.path:
         return {"status": "error", "error": "파일 경로가 비어있습니다."}
 
     normalized_path = _normalize_path(req.path)
+    if not _team_project_path_allowed(current_user, normalized_path):
+        raise HTTPException(status_code=403, detail="팀에 허용된 프로젝트 경로가 아닙니다.")
     if not os.path.isfile(normalized_path):
         return {"status": "error", "error": f"유효하지 않은 파일: {req.path}"}
     if not _allowed_project_roots:
@@ -261,7 +303,12 @@ def _compact_result_value(value, *, depth: int = 0):
 
 
 @rest_router.post("/api/analyze")
-async def analyze(req: AnalysisRequest, shared_db: Session = Depends(get_shared_db)):
+async def analyze(
+    req: AnalysisRequest,
+    shared_db: Session = Depends(get_shared_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_team(current_user, req.team_id or current_user.team_id)
     _ensure_pipeline()
     try:
         api_key = req.api_key
@@ -290,7 +337,7 @@ async def analyze(req: AnalysisRequest, shared_db: Session = Depends(get_shared_
                 knowledge = await asyncio.to_thread(
                     query_dev_knowledge_artifacts,
                     shared_db,
-                    team_id=req.team_id or "",
+                    team_id=current_user.team_id,
                     owner=req.owner,
                     repo=req.repo,
                     branch_name=req.branch_name,
@@ -322,7 +369,8 @@ async def analyze(req: AnalysisRequest, shared_db: Session = Depends(get_shared_
 
 
 @rest_router.post("/api/idea-chat")
-async def idea_chat(req: IdeaChatRequest):
+async def idea_chat(req: IdeaChatRequest, current_user: User = Depends(get_current_user)):
+    _require_team(current_user, current_user.team_id)
     _ensure_pipeline()
     try:
         api_key = req.api_key
@@ -375,8 +423,13 @@ async def upload_doc(file: UploadFile = File(...)):
 
 
 @rest_router.post("/api/extract-final-idea")
-async def extract_final_idea_endpoint(req: ExtractFinalIdeaRequest):
+async def extract_final_idea_endpoint(
+    req: ExtractFinalIdeaRequest,
+    current_user: User = Depends(get_current_user),
+    auth_token: str = Depends(_extract_token),
+):
     """Sync 빌드 전 Pre-flight 단계. 날것의 대화/메모를 정제해 최종 확정 요구사항 마크다운만 추출."""
+    _require_team(current_user, current_user.team_id)
     try:
         from pipeline.domain.chat.idea_extractor import extract_final_idea
         result = extract_final_idea(
@@ -384,7 +437,7 @@ async def extract_final_idea_endpoint(req: ExtractFinalIdeaRequest):
             memos=req.memos or [],
             api_key=req.api_key or "",
             model=req.model or DEFAULT_MODEL,
-            auth_token=req.auth_token or "",
+            auth_token=auth_token,
         )
         return result
     except Exception as e:
@@ -405,12 +458,11 @@ async def delete_session(run_id: str, req: Optional[DeleteSessionRequest] = None
 
 
 @rest_router.get("/api/session/{run_id}/restore")
-async def restore_session(run_id: str):
+async def restore_session(run_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """로컬 DB(AnalysisResult)에서 이전 분석 결과를 복원."""
     import json
-    from auth.database import SessionLocal
     from auth.models import AnalysisResult
-    db = SessionLocal()
+    _require_owned_session(db, current_user, run_id)
     try:
         record = db.query(AnalysisResult).filter(AnalysisResult.run_id == run_id).first()
         if not record:
@@ -420,19 +472,17 @@ async def restore_session(run_id: str):
     except Exception as e:
         get_logger().exception(f"restore_session failed for {run_id}")
         return {"status": "error", "error": str(e)}
-    finally:
-        db.close()
 
 
 @rest_router.get("/api/memos")
-async def get_memos_endpoint(session_id: Optional[str] = None):
-    from auth.database import get_db as _get_db
+async def get_memos_endpoint(session_id: Optional[str] = None, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from auth.models import MemoItem
     if not session_id:
         return {"status": "ok", "memos": []}
+    if not _ensure_memo_session(db, current_user, session_id):
+        return {"status": "ok", "memos": []}
     try:
-        db = next(_get_db())
-        q = db.query(MemoItem).filter(MemoItem.session_id == session_id)
+        q = db.query(MemoItem).filter(MemoItem.session_id == session_id, MemoItem.team_id == current_user.team_id)
         items = q.order_by(MemoItem.created_at.asc()).all()
         memos = [
             {
@@ -456,13 +506,14 @@ async def get_memos_endpoint(session_id: Optional[str] = None):
 
 
 @rest_router.post("/api/memos")
-async def add_memo_endpoint(req: MemoRequest):
-    from auth.database import get_db as _get_db
-    from auth.models import MemoItem
+async def add_memo_endpoint(req: MemoRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from auth.models import AnalysisSession, MemoItem
+    if not _ensure_memo_session(db, current_user, req.session_id):
+        db.add(AnalysisSession(run_id=req.session_id, team_id=current_user.team_id, created_by=current_user.id))
     try:
-        db = next(_get_db())
         memo = MemoItem(
             session_id=req.session_id,
+            team_id=current_user.team_id,
             text=req.text,
             selected_text=req.selected_text,
             section=req.section,
@@ -477,12 +528,10 @@ async def add_memo_endpoint(req: MemoRequest):
 
 
 @rest_router.delete("/api/memos/{memo_id}")
-async def delete_memo_endpoint(memo_id: str):
-    from auth.database import get_db as _get_db
+async def delete_memo_endpoint(memo_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from auth.models import MemoItem
     try:
-        db = next(_get_db())
-        memo = db.query(MemoItem).filter(MemoItem.id == memo_id).first()
+        memo = db.query(MemoItem).filter(MemoItem.id == memo_id, MemoItem.team_id == current_user.team_id).first()
         if memo:
             db.delete(memo)
             db.commit()
@@ -492,16 +541,14 @@ async def delete_memo_endpoint(memo_id: str):
 
 
 @rest_router.post("/api/memos/apply")
-async def apply_memos_endpoint(req: MemoApplyRequest):
-    from auth.database import get_db as _get_db
+async def apply_memos_endpoint(req: MemoApplyRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from auth.models import MemoItem
     from datetime import datetime as _dt
     try:
-        db = next(_get_db())
         ts = _dt.utcnow().isoformat()
         updated = (
             db.query(MemoItem)
-            .filter(MemoItem.id.in_(req.memo_ids))
+            .filter(MemoItem.id.in_(req.memo_ids), MemoItem.team_id == current_user.team_id)
             .all()
         )
         for m in updated:
@@ -536,9 +583,15 @@ class AgileImpactRequest(BaseModel):
 
 
 @rest_router.post("/api/agile/impact")
-async def agile_impact(req: AgileImpactRequest, shared_db: Session = Depends(get_shared_db)):
+async def agile_impact(
+    req: AgileImpactRequest,
+    shared_db: Session = Depends(get_shared_db),
+    current_user: User = Depends(get_current_user),
+    auth_token: str = Depends(_extract_token),
+):
     """변경 영향 분석 (RAG + LLM 2-stage)."""
-    active_jwt_token.set(req.auth_token)
+    _require_team(current_user, req.team_id or current_user.team_id)
+    active_jwt_token.set(auth_token)
     if not req.change_description.strip():
         return {"status": "error", "error": "change_description이 비어있습니다."}
     try:
@@ -550,7 +603,7 @@ async def agile_impact(req: AgileImpactRequest, shared_db: Session = Depends(get
 
                 knowledge = query_dev_knowledge_artifacts(
                     shared_db,
-                    team_id=req.team_id,
+                    team_id=current_user.team_id,
                     owner=req.owner,
                     repo=req.repo,
                     branch_name=req.branch_name,
@@ -864,7 +917,28 @@ def _can_review_dev_gap(current_user: Optional[User]) -> tuple[bool, str]:
         return False, "Authentication required for Dev GAP approval"
     if getattr(current_user, "role", "") not in {"pm", "admin"}:
         return False, "PM or admin role required for Dev GAP approval"
+    if not getattr(current_user, "team_id", None):
+        return False, "Reviewer must belong to a team"
     return True, ""
+
+
+def _dev_gap_task_owned(task_id: str, current_user: User) -> bool:
+    from pipeline.domain.agile.task_coordinator import get_task
+
+    task = get_task(task_id)
+    return bool(task and task.get("team_id") == current_user.team_id)
+
+
+def _dev_gap_item_owned(shared_db: Session, gap_item_id: str, current_user: User) -> bool:
+    from auth.shared_models import DevGapItem, DevPrAnalysis
+
+    gap = shared_db.query(DevGapItem).filter(DevGapItem.id == gap_item_id).first()
+    if not gap:
+        return False
+    analysis = shared_db.query(DevPrAnalysis).filter(DevPrAnalysis.id == gap.analysis_id).first()
+    if not analysis or analysis.team_id != current_user.team_id:
+        return False
+    return not analysis.task_id or _dev_gap_task_owned(analysis.task_id, current_user)
 
 
 def _create_sa_review_task(
@@ -1319,7 +1393,7 @@ def _verify_github_webhook_signature(
     secret: str,
 ) -> tuple[bool, str]:
     if not secret:
-        return True, "webhook secret is not configured; signature verification skipped"
+        return False, "webhook secret is not configured"
     if not signature_header:
         return False, "missing X-Hub-Signature-256"
     if not signature_header.startswith("sha256="):
@@ -1417,8 +1491,9 @@ def _resolve_github_webhook_actor(normalized: dict, shared_db: Session | None) -
 
 
 @rest_router.post("/api/tasks")
-async def create_task_endpoint(req: TaskCreateRequest):
+async def create_task_endpoint(req: TaskCreateRequest, current_user: User = Depends(get_current_user)):
     """새 태스크 생성 (PM 승인 대기)."""
+    _require_team(current_user, req.team_id)
     try:
         from pipeline.domain.agile.task_coordinator import create_task, init_tasks_db
         init_tasks_db()
@@ -1429,8 +1504,8 @@ async def create_task_endpoint(req: TaskCreateRequest):
             area=req.area,
             assignee=req.assignee,
             payload=req.payload,
-            created_by=req.created_by,
-            team_id=req.team_id,
+            created_by=current_user.id,
+            team_id=current_user.team_id,
         )
         return {"status": "ok", "data": task}
     except Exception as e:
@@ -1563,18 +1638,20 @@ async def github_webhook_endpoint(
 @rest_router.post("/api/dev-tracking/pr")
 async def dev_tracking_pr_endpoint(
     req: DevTrackingRequest,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     shared_db: Session = Depends(get_shared_db),
+    auth_token: str = Depends(_extract_token),
 ):
     """PR 기반 Dev Tracking MVP 실행"""
-    active_jwt_token.set(req.auth_token)
+    _require_team(current_user, req.team_id or current_user.team_id)
+    active_jwt_token.set(auth_token)
     try:
         # author:xxrin
         # 이 endpoint는 분리된 dev_tracking service를 호출하는 어댑터 역할만 함
         from pipeline.domain.dev_tracking import run_dev_tracking_analysis
 
         github_token = req.github_token
-        if not github_token and current_user:
+        if not github_token:
             github_token = current_user.github_oauth_token
         #payload
         payload = {
@@ -1591,8 +1668,8 @@ async def dev_tracking_pr_endpoint(
             "use_llm_intent_classifier": req.use_llm_intent_classifier,
             "compress_prompt": req.compress_prompt,
             "notify_pr": req.notify_pr,
-            "team_id": req.team_id or (current_user.team_id if current_user else ""),
-            "created_by": req.created_by or (current_user.id if current_user else ""),
+            "team_id": current_user.team_id,
+            "created_by": current_user.id,
         }
         result = run_dev_tracking_analysis(payload, shared_db=shared_db)
         return {"status": "ok", "data": result}
@@ -1694,6 +1771,8 @@ async def dev_gap_item_approve_endpoint(
     allowed, error = _can_review_dev_gap(current_user)
     if not allowed:
         return {"status": "error", "error": error}
+    if not _dev_gap_item_owned(shared_db, gap_item_id, current_user):
+        raise HTTPException(status_code=403, detail="현재 팀의 GAP만 검토할 수 있습니다.")
     reviewed_by = str(getattr(current_user, "id", "") or "")
     return _update_dev_gap_item_decision(
         shared_db,
@@ -1715,6 +1794,8 @@ async def dev_gap_item_reject_endpoint(
     allowed, error = _can_review_dev_gap(current_user)
     if not allowed:
         return {"status": "error", "error": error}
+    if not _dev_gap_item_owned(shared_db, gap_item_id, current_user):
+        raise HTTPException(status_code=403, detail="현재 팀의 GAP만 검토할 수 있습니다.")
     reviewed_by = str(getattr(current_user, "id", "") or "")
     return _update_dev_gap_item_decision(
         shared_db,
@@ -1735,6 +1816,8 @@ async def dev_gap_approve_endpoint(
     allowed, error = _can_review_dev_gap(current_user)
     if not allowed:
         return {"status": "error", "error": error}
+    if not _dev_gap_task_owned(task_id, current_user):
+        raise HTTPException(status_code=403, detail="현재 팀의 Dev GAP 태스크만 검토할 수 있습니다.")
     reviewed_by = str(getattr(current_user, "id", "") or "")
     # author: xxrin
     # 전용 승인 API는 PATCH status 재해석 없이 명시적인 승인 상태를 helper에 전달한다.
@@ -1760,6 +1843,8 @@ async def dev_gap_reject_endpoint(
     allowed, error = _can_review_dev_gap(current_user)
     if not allowed:
         return {"status": "error", "error": error}
+    if not _dev_gap_task_owned(task_id, current_user):
+        raise HTTPException(status_code=403, detail="현재 팀의 Dev GAP 태스크만 검토할 수 있습니다.")
     reviewed_by = str(getattr(current_user, "id", "") or "")
     # author: xxrin
     # 전용 거절 API는 PM 판단 사유를 명시적으로 후속 처리 payload에 남긴다.
@@ -1785,6 +1870,8 @@ async def dev_gap_sa_review_request_endpoint(
     allowed, error = _can_review_dev_gap(current_user)
     if not allowed:
         return {"status": "error", "error": error}
+    if not _dev_gap_task_owned(task_id, current_user):
+        raise HTTPException(status_code=403, detail="현재 팀의 Dev GAP 태스크만 검토할 수 있습니다.")
     try:
         from pipeline.domain.agile.task_coordinator import get_task, init_tasks_db
 
@@ -1813,12 +1900,17 @@ async def dev_gap_sa_review_request_endpoint(
 
 
 @rest_router.get("/api/tasks")
-async def list_tasks_endpoint(status: Optional[str] = None, team_id: Optional[str] = None):
+async def list_tasks_endpoint(
+    status: Optional[str] = None,
+    team_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
     """태스크 목록 조회."""
+    _require_team(current_user, team_id or current_user.team_id)
     try:
         from pipeline.domain.agile.task_coordinator import list_tasks, init_tasks_db
         init_tasks_db()
-        tasks = list_tasks(status=status, team_id=team_id or None)
+        tasks = list_tasks(status=status, team_id=current_user.team_id)
         return {"status": "ok", "data": tasks}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -1840,6 +1932,9 @@ async def update_task_endpoint(
         existing_task = get_task(task_id)
         if not existing_task:
             return {"status": "error", "error": "Task not found"}
+        if not current_user:
+            raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+        _require_team(current_user, existing_task.get("team_id", ""))
 
         # author: xxrin
         # 기존 PATCH 경로도 호환하되 Dev GAP 승인/거절은 전용 helper로 위임한다.
@@ -1851,6 +1946,8 @@ async def update_task_endpoint(
             allowed, error = _can_review_dev_gap(current_user)
             if not allowed:
                 return {"status": "error", "error": error}
+            if not _dev_gap_task_owned(task_id, current_user):
+                raise HTTPException(status_code=403, detail="현재 팀의 Dev GAP 태스크만 검토할 수 있습니다.")
             reviewed_by = str(getattr(current_user, "id", "") or "")
             decision_status = (
                 "APPROVED_INTENTIONAL_CHANGE"
@@ -1866,26 +1963,35 @@ async def update_task_endpoint(
                 result_payload,
             )
 
-        task = update_task_status(task_id, req.status, req.reviewed_by, req.result)
+        task = update_task_status(task_id, req.status, current_user.id, req.result)
         if not task:
             return {"status": "error", "error": "Task not found"}
 
         return {"status": "ok", "data": task}
+    except HTTPException:
+        raise
     except Exception as e:
         get_logger().exception(f"update_task endpoint failed for {task_id}")
         return {"status": "error", "error": str(e)}
 
 
 @rest_router.delete("/api/tasks/{task_id}")
-async def delete_task_endpoint(task_id: str):
+async def delete_task_endpoint(task_id: str, current_user: User = Depends(get_current_user)):
     """완료/거절된 태스크 삭제."""
+    from pipeline.domain.agile.task_coordinator import get_task, delete_task, init_tasks_db
+
+    init_tasks_db()
+    existing = get_task(task_id)
+    if not existing:
+        return {"status": "error", "error": "Task not found"}
+    _require_team(current_user, existing.get("team_id", ""))
     try:
-        from pipeline.domain.agile.task_coordinator import delete_task, init_tasks_db
-        init_tasks_db()
         deleted = delete_task(task_id)
         if not deleted:
             return {"status": "error", "error": "Task not found"}
         return {"status": "ok"}
+    except HTTPException:
+        raise
     except Exception as e:
         get_logger().exception(f"delete_task endpoint failed for {task_id}")
         return {"status": "error", "error": str(e)}
@@ -1909,20 +2015,97 @@ class DistributeTasksRequest(BaseModel):
     members: list = []
 
 
+class TaskProposalApprovalRequest(BaseModel):
+    token: str
+
+
+def _task_proposal_secret() -> str:
+    secret = os.environ.get("NAVIGATOR_JWT_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=503, detail="태스크 제안 승인 비밀키가 설정되지 않았습니다.")
+    return secret + ":task-proposal"
+
+
+def _sign_task_proposal(proposal: dict, kind: str, run_id: str, user: User) -> str:
+    from jose import jwt
+
+    return jwt.encode({
+        "purpose": "task_proposal",
+        "kind": kind,
+        "proposal": proposal,
+        "run_id": run_id,
+        "team_id": user.team_id,
+        "actor_id": user.id,
+        "exp": datetime.utcnow() + timedelta(minutes=30),
+    }, _task_proposal_secret(), algorithm="HS256")
+
+
+@rest_router.post("/api/agile/task-proposals/approve")
+async def approve_task_proposal_endpoint(
+    req: TaskProposalApprovalRequest,
+    current_user: User = Depends(get_current_user),
+):
+    from jose import JWTError, jwt
+    from pipeline.domain.agile.task_coordinator import create_task, apply_task_update_proposal
+
+    if current_user.role != "pm" or not current_user.team_id:
+        raise HTTPException(status_code=403, detail="현재 팀 PM 권한이 필요합니다.")
+    try:
+        claims = jwt.decode(req.token, _task_proposal_secret(), algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status_code=400, detail="유효하지 않거나 만료된 제안입니다.")
+    if claims.get("purpose") != "task_proposal" or claims.get("actor_id") != current_user.id:
+        raise HTTPException(status_code=403, detail="이 사용자의 제안이 아닙니다.")
+    _require_team(current_user, claims.get("team_id", ""))
+    proposal = claims.get("proposal")
+    if not isinstance(proposal, dict) or not claims.get("run_id"):
+        raise HTTPException(status_code=400, detail="제안 내용이 올바르지 않습니다.")
+
+    if claims.get("kind") == "create":
+        if not proposal.get("title", "").strip() or proposal.get("task_type") not in {
+            "feature", "test", "infra", "doc_sync", "bugfix", "refactor"
+        }:
+            raise HTTPException(status_code=400, detail="제안 태스크가 올바르지 않습니다.")
+        task = create_task(
+            task_type=proposal["task_type"], title=proposal["title"],
+            description=proposal.get("description", ""), area=proposal.get("area", ""),
+            feature_ref=proposal.get("feature_ref", ""), effort=proposal.get("effort", ""),
+            team_id=current_user.team_id, created_by=current_user.id, status="unassigned",
+            payload={"priority": proposal.get("priority", "medium"), "approved_from_run": claims["run_id"]},
+        )
+    elif claims.get("kind") == "update":
+        task = apply_task_update_proposal(current_user.team_id, proposal, current_user.id)
+    else:
+        raise HTTPException(status_code=400, detail="알 수 없는 제안 종류입니다.")
+    if not task:
+        raise HTTPException(status_code=409, detail="중복되었거나 검토 이후 태스크가 변경됐습니다.")
+    return {"status": "ok", "data": task}
+
+
 @rest_router.post("/api/agile/generate-tasks")
-async def generate_tasks_endpoint(req: GenerateTasksRequest):
-    """SA/PM 산출물 → unassigned 태스크 자동 생성 (파이프라인 완료 후 호출)."""
+async def generate_tasks_endpoint(
+    req: GenerateTasksRequest, current_user: User = Depends(get_current_user),
+):
+    """SA/PM 산출물 → 검토할 태스크 제안."""
+    _require_team(current_user, req.team_id)
+    if current_user.role != "pm":
+        raise HTTPException(status_code=403, detail="PM 권한이 필요합니다.")
     active_jwt_token.set(req.auth_token)
     try:
         from auth.database import SessionLocal
-        from auth.models import AnalysisResult
+        from auth.models import AnalysisResult, AnalysisSession
         from pipeline.domain.agile.nodes.task_generator import run_task_generator
         from version import DEFAULT_MODEL
         import json
 
         db = SessionLocal()
         try:
-            record = db.query(AnalysisResult).filter(AnalysisResult.run_id == req.run_id).first()
+            record = db.query(AnalysisResult).join(
+                AnalysisSession, AnalysisSession.run_id == AnalysisResult.run_id
+            ).filter(
+                AnalysisResult.run_id == req.run_id,
+                AnalysisSession.team_id == current_user.team_id,
+            ).first()
             if not record:
                 return {"status": "error", "error": f"run_id '{req.run_id}' 결과 없음"}
             shaped = json.loads(record.shaped_result)
@@ -1938,17 +2121,28 @@ async def generate_tasks_endpoint(req: GenerateTasksRequest):
             team_id=req.team_id,
             api_key=req.api_key,
             model=req.model or DEFAULT_MODEL,
-            created_by=req.created_by,
+            created_by=current_user.id,
         )
+        for item in result["task_proposals"]:
+            item["approval_token"] = _sign_task_proposal(item, "create", req.run_id, current_user)
+        for item in result["update_proposals"]:
+            item["approval_token"] = _sign_task_proposal(item, "update", req.run_id, current_user)
         return {"status": "ok", "data": result}
+    except HTTPException:
+        raise
     except Exception as e:
         get_logger().exception("generate_tasks endpoint failed")
         return {"status": "error", "error": str(e)}
 
 
 @rest_router.post("/api/agile/distribute-tasks")
-async def distribute_tasks_endpoint(req: DistributeTasksRequest):
+async def distribute_tasks_endpoint(
+    req: DistributeTasksRequest, current_user: User = Depends(get_current_user),
+):
     """unassigned 태스크를 팀 멤버에게 배분 (PM이 '배분' 버튼 클릭 시 호출)."""
+    _require_team(current_user, req.team_id)
+    if current_user.role != "pm":
+        raise HTTPException(status_code=403, detail="PM 권한이 필요합니다.")
     active_jwt_token.set(req.auth_token)
     try:
         from pipeline.domain.agile.nodes.task_distributor import run_task_distributor
@@ -1958,7 +2152,7 @@ async def distribute_tasks_endpoint(req: DistributeTasksRequest):
             team_id=req.team_id,
             api_key=req.api_key,
             model=req.model or DEFAULT_MODEL,
-            distributed_by=req.distributed_by,
+            distributed_by=current_user.id,
             members=req.members or [],
         )
         return {"status": "ok", "data": result}
@@ -1968,8 +2162,9 @@ async def distribute_tasks_endpoint(req: DistributeTasksRequest):
 
 
 @rest_router.post("/api/doc-sync")
-async def doc_sync_endpoint(req: DocSyncRequest):
+async def doc_sync_endpoint(req: DocSyncRequest, current_user: User = Depends(get_current_user)):
     """SA 결과물을 GitHub에 자동 동기화."""
+    _require_team(current_user, current_user.team_id)
     try:
         from pipeline.domain.agile.nodes.doc_sync import sync_docs
         result = sync_docs(
@@ -1996,17 +2191,44 @@ class PublishRequest(BaseModel):
     team_id: Optional[str] = None
 
 
-@rest_router.get("/api/local-results")
-async def list_local_results_endpoint(
-    limit: int = 50,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+class ShareArtifactRequest(BaseModel):
+    run_id: str = Field(max_length=255)
+    kind: Literal["components", "apis"]
+
+
+@rest_router.post("/api/share-artifact")
+async def share_artifact_endpoint(
+    req: ShareArtifactRequest,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     shared_db: Session = Depends(get_shared_db),
 ):
-    """Publish 대상 선택을 위한 로컬 분석 결과 목록."""
+    _require_team(current_user, current_user.team_id)
+    from storage.publish_service import publish_snapshot
+
+    try:
+        snapshot = publish_snapshot(
+            db, shared_db, req.run_id,
+            "컴포넌트" if req.kind == "components" else "API Spec",
+            team_id=current_user.team_id, user_id=current_user.id, kind=req.kind,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"status": "ok", "data": snapshot}
+
+
+@rest_router.get("/api/local-results")
+async def list_local_results_endpoint(
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    shared_db: Session = Depends(get_shared_db),
+):
+    """Publish 대상 선택을 위한 현재 팀 분석 결과 목록."""
+    _require_team(current_user, current_user.team_id)
     try:
         from storage.publish_service import list_local_results
-        return {"status": "ok", "data": list_local_results(db, shared_db, limit=limit)}
+        return {"status": "ok", "data": list_local_results(db, shared_db, limit=limit, team_id=current_user.team_id)}
     except Exception as e:
         get_logger().exception("list_local_results failed")
         return {"status": "error", "error": str(e)}
@@ -2015,15 +2237,16 @@ async def list_local_results_endpoint(
 @rest_router.post("/api/publish")
 async def publish_snapshot_endpoint(
     req: PublishRequest,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     shared_db: Session = Depends(get_shared_db),
 ):
     """로컬 분석 결과를 공유 DB에 Publish."""
+    _require_team(current_user, req.team_id or current_user.team_id)
     try:
         from storage.publish_service import publish_snapshot
-        team_id = req.team_id or (current_user.team_id if current_user else None)
-        user_id = current_user.id if current_user else None
+        team_id = current_user.team_id
+        user_id = current_user.id
         snap = publish_snapshot(
             db, shared_db,
             run_id=req.run_id,
@@ -2045,13 +2268,14 @@ async def list_snapshots_endpoint(
     team_id: Optional[str] = None,
     limit: int = 30,
     offset: int = 0,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     shared_db: Session = Depends(get_shared_db),
 ):
     """팀 공유 스냅샷 목록."""
+    _require_team(current_user, team_id or current_user.team_id)
     try:
         from storage.publish_service import list_snapshots
-        resolved_team = team_id or (current_user.team_id if current_user else None)
+        resolved_team = current_user.team_id
         snaps = list_snapshots(shared_db, team_id=resolved_team, limit=limit, offset=offset)
         return {"status": "ok", "data": snaps}
     except Exception as e:
@@ -2062,6 +2286,7 @@ async def list_snapshots_endpoint(
 @rest_router.get("/api/snapshots/{snapshot_id}")
 async def get_snapshot_endpoint(
     snapshot_id: str,
+    current_user: User = Depends(get_current_user),
     shared_db: Session = Depends(get_shared_db),
 ):
     """스냅샷 상세 조회 (데이터 포함)."""
@@ -2070,7 +2295,10 @@ async def get_snapshot_endpoint(
         snap = get_snapshot(shared_db, snapshot_id)
         if not snap:
             return {"status": "error", "error": "스냅샷을 찾을 수 없습니다."}
+        _require_team(current_user, snap.get("team_id"))
         return {"status": "ok", "data": snap}
+    except HTTPException:
+        raise
     except Exception as e:
         get_logger().exception("get_snapshot failed")
         return {"status": "error", "error": str(e)}
@@ -2079,7 +2307,7 @@ async def get_snapshot_endpoint(
 @rest_router.delete("/api/snapshots/{snapshot_id}")
 async def delete_snapshot_endpoint(
     snapshot_id: str,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     shared_db: Session = Depends(get_shared_db),
 ):
     """스냅샷 삭제 (게시자 본인 또는 PM만)."""
@@ -2088,13 +2316,13 @@ async def delete_snapshot_endpoint(
         snap = get_snapshot(shared_db, snapshot_id)
         if not snap:
             return {"status": "error", "error": "스냅샷을 찾을 수 없습니다."}
-        if current_user:
-            is_owner = snap["published_by"] == current_user.id
-            is_pm = current_user.role == "pm"
-            if not (is_owner or is_pm):
-                return {"status": "error", "error": "삭제 권한이 없습니다."}
+        _require_team(current_user, snap.get("team_id"))
+        if snap["published_by"] != current_user.id and current_user.role != "pm":
+            raise HTTPException(status_code=403, detail="삭제 권한이 없습니다.")
         delete_snapshot(shared_db, snapshot_id)
         return {"status": "ok"}
+    except HTTPException:
+        raise
     except Exception as e:
         get_logger().exception("delete_snapshot failed")
         return {"status": "error", "error": str(e)}
@@ -2119,10 +2347,16 @@ async def pull_snapshot_endpoint(
         snap = shared_db.query(PublishedSnapshot).filter(PublishedSnapshot.id == snapshot_id).first()
         if not snap:
             return {"status": "error", "error": "스냅샷을 찾을 수 없습니다."}
-        if snap.team_id and snap.team_id != current_user.team_id:
-            return {"status": "error", "error": "현재 팀의 스냅샷이 아닙니다."}
+        _require_team(current_user, snap.team_id)
+        from auth.models import AnalysisSession
+        target = db.query(AnalysisSession).filter(AnalysisSession.run_id == req.run_id).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="현재 팀의 로컬 세션이 없습니다.")
+        _require_team(current_user, target.team_id)
         result = pull_snapshot(shared_db, db, snapshot_id=snapshot_id, run_id=req.run_id)
         return {"status": "ok", "data": result}
+    except HTTPException:
+        raise
     except ValueError as e:
         return {"status": "error", "error": str(e)}
     except Exception as e:

@@ -1,0 +1,6 @@
+.env
+shared.db
+venv
+__pycache__
+test
+*.pyc

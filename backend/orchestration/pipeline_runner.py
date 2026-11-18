@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime
 
 from fastapi import WebSocket
@@ -393,21 +394,37 @@ async def run_idea_chat(ws: WebSocket, payload: dict) -> None:
 
     # ── 채팅 의도로 만들어진 메모를 SQLite(local.db)에 직접 영속화 ──
     raw_notes = result.get("notes_to_add") or []
+    current_message = str(payload.get("message") or "").strip()
+    save_requested = bool(re.fullmatch(
+        r".{0,200}(?:메모|노트|기록|저장)(?:에|로)?\s*"
+        r"(?:해줘|해주세요|남겨줘|적어줘|기록해줘|저장해줘)[.!\s]*|"
+        r".{0,200}(?:save|add|write).*(?:note|memo)[.!\s]*",
+        current_message,
+        re.IGNORECASE,
+    ))
     persisted_notes: list = []
     # 활성 세션이 없으면 메모를 DB에 쓰지 않는다.
     # WS 응답은 빈 notes_to_add로 정상 진행 → 프론트는 평소처럼 동작.
-    if raw_notes and chat_session_id:
+    if raw_notes and chat_session_id and save_requested:
         try:
-            from auth.models import MemoItem
+            from auth.models import AnalysisSession, MemoItem
+            from auth.service import decode_token, get_user_by_id
             db = SessionLocal()
             try:
+                claims = decode_token(active_jwt_token.get() or "")
+                user = get_user_by_id(db, claims.get("sub", "")) if claims else None
+                if not user or not user.team_id or not db.query(AnalysisSession).filter(
+                    AnalysisSession.run_id == chat_session_id,
+                    AnalysisSession.team_id == user.team_id,
+                ).first():
+                    raise ValueError("현재 팀의 분석 세션이 아닙니다.")
                 # 같은 세션에 이미 저장된 메모 텍스트 — LLM이 chat_history를 보고
                 # 이전 항목까지 누적해 notes_to_add를 반환하는 회귀를 차단한다.
                 # 텍스트 기반 dedupe로 같은 (session_id, text) 페어 중복 insert를 막음.
                 existing_texts = {
                     (row[0] or "").strip()
                     for row in db.query(MemoItem.text)
-                    .filter(MemoItem.session_id == chat_session_id)
+                    .filter(MemoItem.session_id == chat_session_id, MemoItem.team_id == user.team_id)
                     .all()
                 }
                 for note in raw_notes:
@@ -419,6 +436,7 @@ async def run_idea_chat(ws: WebSocket, payload: dict) -> None:
                     existing_texts.add(text)  # 같은 응답 내 중복도 차단
                     item = MemoItem(
                         session_id=chat_session_id,
+                        team_id=user.team_id,
                         text=text,
                         selected_text="",
                         section=str(note.get("section") or "Idea Chat").strip() or "Idea Chat",
@@ -555,11 +573,19 @@ def _persist_analysis_result(run_id: str, shaped: dict) -> None:
     try:
         import json as _json
         from auth.models import AnalysisSession, AnalysisResult
+        from auth.service import decode_token, get_user_by_id
         db = SessionLocal()
         try:
+            claims = decode_token(active_jwt_token.get() or "")
+            user = get_user_by_id(db, claims.get("sub", "")) if claims else None
+            if not user or not user.team_id:
+                return
             # AnalysisSession 레코드가 없으면 먼저 생성
-            if not db.query(AnalysisSession).filter(AnalysisSession.run_id == run_id).first():
-                db.add(AnalysisSession(run_id=run_id))
+            session = db.query(AnalysisSession).filter(AnalysisSession.run_id == run_id).first()
+            if session and session.team_id != user.team_id:
+                return
+            if not session:
+                db.add(AnalysisSession(run_id=run_id, team_id=user.team_id, created_by=user.id))
 
             # 기존 결과가 있으면 덮어쓰기
             existing = db.query(AnalysisResult).filter(AnalysisResult.run_id == run_id).first()

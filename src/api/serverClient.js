@@ -2,7 +2,7 @@
  * serverClient — Cloud Run navigator-server 전용 HTTP 클라이언트
  */
 
-export const SERVER_URL = "https://navigator-server-640700885251.asia-northeast3.run.app";
+export const SERVER_URL = import.meta.env.VITE_SERVER_URL || "https://navigator-server-640700885251.asia-northeast3.run.app";
 
 export async function serverRequest(path, options = {}) {
   const controller = new AbortController();

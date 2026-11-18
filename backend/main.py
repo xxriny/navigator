@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from version import APP_VERSION
 
 # ── 경로 설정 ────────────────────────────────────────────
@@ -46,6 +46,8 @@ except ImportError:
 
 # ── 계층 임포트 ──────────────────────────────────────────
 from transport.rest_handler import rest_router
+from transport.account_proxy import account_router
+from transport.public_guard import check_public_api
 from transport.team_router import team_router
 from transport.message_router import message_router
 from transport.ws_handler import websocket_pipeline
@@ -89,8 +91,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def protect_public_api(request, call_next):
+    denied = await check_public_api(request)
+    return denied if denied is not None else await call_next(request)
+
 # ── 라우터 등록 ──────────────────────────────────────────
 app.include_router(auth_router)
+app.include_router(account_router)
 app.include_router(team_router)
 app.include_router(message_router)
 app.include_router(rest_router)

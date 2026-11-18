@@ -145,6 +145,14 @@ def _run_migrations() -> None:
         _add_column_if_missing(conn, "users", "github_login",         "TEXT")
         _add_column_if_missing(conn, "users", "github_oauth_token",   "TEXT")
         _migrate_role_constraint(conn)
+        _add_column_if_missing(conn, "users", "signup_method", "TEXT")
+        # shortcut: legacy email accounts already linked to GitHub are indistinguishable; audit those rows if needed.
+        conn.execute(text("""
+            UPDATE users SET signup_method = CASE
+                WHEN github_id IS NOT NULL OR password_hash = '' THEN 'github'
+                ELSE 'email'
+            END WHERE signup_method IS NULL
+        """))
 
     # 로컬 DB 마이그레이션 (agile_tasks 등)
     with engine.begin() as conn:
@@ -160,6 +168,7 @@ def _run_migrations() -> None:
 
 def init_db():
     from auth.shared_models import User, Team, Subscription, PublishedSnapshot, DirectMessage  # noqa: F401
+    from auth.quota import EmailModelUsage  # noqa: F401
     from auth.models import (  # noqa: F401
         AnalysisSession, DesignChangeRequest, MemoItem, AnalysisResult,
     )

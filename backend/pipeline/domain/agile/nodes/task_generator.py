@@ -237,13 +237,27 @@ def run_task_generator(
         })
         proposed_ids.add(suggestion.task_id)
 
+    risk_zones = (sa_bundle.get("data") or {}).get("test_strategy", {}).get("risk_zones", [])
+    covered_tests = [
+        t for t in all_tasks if t.get("task_type") == "test" and t.get("status") != "rejected"
+    ] + [t for t in proposals if t["task_type"] == "test"]
+    missing_risk_zones = []
+    for index, zone in enumerate(risk_zones, 1):
+        name = zone.get("component_name") or zone.get("cn") or ""
+        if not name or not any(
+            _normalize(name) in _normalize(" ".join((t.get("title") or "", t.get("description") or "")))
+            for t in covered_tests
+        ):
+            missing_risk_zones.append(name or f"(unnamed risk zone {index})")
+
     return {
         "created": 0,
         "updated": 0,
         "tasks": [],
         "skipped": skipped,
         "skipped_updates": skipped_updates,
-        "proposal_status": "awaiting_approval" if proposals or updates else "no_changes",
+        "proposal_status": "review_required" if missing_risk_zones else ("awaiting_approval" if proposals or updates else "no_changes"),
+        "missing_risk_zones": missing_risk_zones,
         "task_proposals": proposals,
         "update_proposals": updates,
         "summary": f"신규 제안 {len(proposals)}개, 수정 제안 {len(updates)}개; 저장 및 수정 없음",

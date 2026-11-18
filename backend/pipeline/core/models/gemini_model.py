@@ -31,39 +31,24 @@ def _remember_cache_entry(cache: OrderedDict, key: str, value: Any):
 
 
 def get_gemini_client(api_key: str, model: str = DEFAULT_MODEL, temperature: float = DEFAULT_TEMPERATURE) -> BaseChatModel:
-    """LangChain 기반의 LLM 인스턴스 반환 (Vertex AI 우선 적용 및 실패 시 Fallback 지원)"""
+    """배포 시 Vertex AI, 로컬 개발 시 Gemini API 클라이언트를 반환한다."""
     from pipeline.core.utils import get_effective_key
     effective_key = get_effective_key(api_key)
-    cache_key = f"{effective_key}:{model}:{temperature}"
+    use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() == "true"
+    cache_key = f"{effective_key}:{os.environ.get('GCP_PROJECT_ID')}:{os.environ.get('GCP_LOCATION')}:{model}:{temperature}"
 
     with _llm_cache_lock:
         if cache_key in _llm_cache:
             _llm_cache.move_to_end(cache_key)
             return _llm_cache[cache_key]
 
-        use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() == "true"
-        llm = None
-
         if use_vertex:
-            try:
-                from langchain_google_vertexai import ChatVertexAI
-                project_id = os.environ.get("GCP_PROJECT_ID")
-                location = os.environ.get("GCP_LOCATION", "us-central1")
-                
-                # Vertex AI 초기화 시도
-                llm = ChatVertexAI(
-                    model_name=model,
-                    temperature=temperature,
-                    project=project_id,
-                    location=location
-                )
-                logger.info(f"Vertex AI (ChatVertexAI) 인스턴스가 성공적으로 초기화되었습니다: {model}")
-            except Exception as e:
-                logger.warning(f"Vertex AI 초기화 실패, 기존 Google API로 폴백합니다. 원인: {e}")
-                llm = None
-        
-        if llm is None:
-            # Fallback 또는 USE_VERTEX_AI=false 인 경우
+            from langchain_google_vertexai import ChatVertexAI
+            llm = ChatVertexAI(
+                model_name=model, temperature=temperature,
+                project=os.environ["GCP_PROJECT_ID"], location=os.environ["GCP_LOCATION"],
+            )
+        else:
             llm = ChatGoogleGenerativeAI(
                 model=model,
                 google_api_key=effective_key,
@@ -75,29 +60,23 @@ def get_gemini_client(api_key: str, model: str = DEFAULT_MODEL, temperature: flo
 
 
 def get_raw_genai_client(api_key: str) -> genai.Client:
-    """Google GenAI SDK 기반의 원시 클라이언트 반환 (Vertex AI 우선 및 Fallback)"""
+    """배포 시 Vertex AI, 로컬 개발 시 Gemini API 클라이언트를 반환한다."""
     from pipeline.core.utils import get_effective_key
     effective_key = get_effective_key(api_key)
+    use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() == "true"
+    cache_key = f"{effective_key}:{os.environ.get('GCP_PROJECT_ID')}:{os.environ.get('GCP_LOCATION')}"
     with _raw_cache_lock:
-        if effective_key in _raw_cache:
-            _raw_cache.move_to_end(effective_key)
-            return _raw_cache[effective_key]
-
-        use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() == "true"
-        client = None
+        if cache_key in _raw_cache:
+            _raw_cache.move_to_end(cache_key)
+            return _raw_cache[cache_key]
 
         if use_vertex:
-            try:
-                project_id = os.environ.get("GCP_PROJECT_ID")
-                location = os.environ.get("GCP_LOCATION", "us-central1")
-                client = genai.Client(vertexai=True, project=project_id, location=location)
-                logger.info("Vertex AI (genai.Client)가 성공적으로 초기화되었습니다.")
-            except Exception as e:
-                logger.warning(f"Vertex AI 원시 클라이언트 초기화 실패, 기존 Google API로 폴백합니다. 원인: {e}")
-                client = None
-
-        if client is None:
+            client = genai.Client(
+                vertexai=True, project=os.environ["GCP_PROJECT_ID"],
+                location=os.environ["GCP_LOCATION"],
+            )
+        else:
             client = genai.Client(api_key=effective_key)
 
-        _remember_cache_entry(_raw_cache, effective_key, client)
+        _remember_cache_entry(_raw_cache, cache_key, client)
     return client

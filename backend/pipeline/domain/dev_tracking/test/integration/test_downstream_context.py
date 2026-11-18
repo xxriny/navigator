@@ -62,6 +62,8 @@ def test_agile_impact_injects_dev_tracking_knowledge(monkeypatch):
                 branch_name="feature/dev-tracking",
             ),
             shared_db="shared",
+            current_user=_fake_user(),
+            auth_token="test-token",
         )
     )
 
@@ -146,6 +148,7 @@ def test_analyze_update_injects_dev_tracking_knowledge(monkeypatch):
                 repo="navigator",
             ),
             shared_db="shared",
+            current_user=_fake_user(),
         )
     )
 

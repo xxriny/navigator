@@ -58,6 +58,42 @@ def _contract_name(contract: dict[str, Any]) -> str:
     return ""
 
 
+def _has_verified_no_gap_evidence(state: dict[str, Any]) -> bool:
+    snapshot = _as_dict(state.get("published_spec_snapshot"))
+    api_contracts = snapshot.get("api_contracts") or []
+    component_contracts = snapshot.get("component_contracts") or []
+    if not isinstance(api_contracts, list) or not isinstance(component_contracts, list):
+        return False
+    contracts = api_contracts + component_contracts
+    inventory = _as_dict(state.get("code_inventory"))
+    symbols_by_file = _as_dict(inventory.get("symbols_by_file"))
+    profile = _as_dict(state.get("implementation_profile"))
+    if not contracts or not all(isinstance(item, dict) and _contract_name(item) for item in contracts):
+        return False
+    if not _as_dict(state.get("checkout")).get("head_sha_matched"):
+        return False
+    if not inventory.get("files") or not symbols_by_file:
+        return False
+    if any(_as_dict(state.get(key)).get("preliminary", True) for key in ("forensic_profiler_meta", "gap_analyzer_meta")):
+        return False
+    if state.get("llm_warnings") or state.get("gap_report"):
+        return False
+    if not (profile.get("detected_apis") or profile.get("detected_components")):
+        return False
+    for contracts_for_field, field in ((api_contracts, "detected_apis"), (component_contracts, "detected_components")):
+        detected_names = set()
+        for item in profile.get(field) or []:
+            if not isinstance(item, dict):
+                return False
+            symbols = symbols_by_file.get(item.get("file")) or []
+            if item.get("name") not in {symbol.get("name") for symbol in symbols if isinstance(symbol, dict)}:
+                return False
+            detected_names.add(str(item.get("name") or "").lower())
+        if any(_contract_name(contract) not in detected_names for contract in contracts_for_field):
+            return False
+    return not _rule_based_gap_report(state)
+
+
 def _rule_based_gap_report(state: dict[str, Any], *, preliminary: bool = False) -> list[dict[str, Any]]:
     snapshot = _as_dict(state.get("published_spec_snapshot"))
     profile = _as_dict(state.get("implementation_profile"))

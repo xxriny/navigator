@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from auth.database import get_db, get_shared_db
 from auth.shared_models import User, Team, Subscription
-from auth.models import DesignChangeRequest
+from auth.models import AnalysisSession, DesignChangeRequest
 from auth.schemas import (
     RegisterRequest, LoginRequest,
     ChangeRequestCreate, ChangeRequestUpdate, DevicePollRequest,
@@ -86,6 +86,7 @@ async def register(req: RegisterRequest, db: Session = Depends(get_shared_db)):
             role=req.role,
             github_username=req.github_username,
             team_name=req.team_name,
+            public_signup=True,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -342,6 +343,11 @@ async def create_change_request(
     current_user: User = Depends(require_engineer),
     db: Session = Depends(get_db),
 ):
+    if not current_user.team_id or not db.query(AnalysisSession).filter(
+        AnalysisSession.run_id == req.session_id,
+        AnalysisSession.team_id == current_user.team_id,
+    ).first():
+        raise HTTPException(status_code=404, detail="분석 세션을 찾을 수 없습니다.")
     cr = DesignChangeRequest(
         session_id=req.session_id,
         requested_by=current_user.id,
@@ -366,7 +372,9 @@ async def list_change_requests(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    q = db.query(DesignChangeRequest)
+    q = db.query(DesignChangeRequest).join(
+        AnalysisSession, AnalysisSession.run_id == DesignChangeRequest.session_id,
+    ).filter(AnalysisSession.team_id == current_user.team_id)
     if session_id:
         q = q.filter(DesignChangeRequest.session_id == session_id)
     items = q.order_by(DesignChangeRequest.created_at.desc()).limit(50).all()
@@ -393,7 +401,12 @@ async def update_change_request(
     current_user: User = Depends(require_pm),
     db: Session = Depends(get_db),
 ):
-    cr = db.query(DesignChangeRequest).filter(DesignChangeRequest.id == cr_id).first()
+    cr = db.query(DesignChangeRequest).join(
+        AnalysisSession, AnalysisSession.run_id == DesignChangeRequest.session_id,
+    ).filter(
+        DesignChangeRequest.id == cr_id,
+        AnalysisSession.team_id == current_user.team_id,
+    ).first()
     if not cr:
         raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다.")
     if req.status not in ("approved", "rejected"):
